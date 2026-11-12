@@ -3,13 +3,13 @@ import { createDefaultMap } from './mapTemplate.js';
 import { Player } from './player.js';
 
 const firebaseConfig = {
-    apiKey: "YOUR_API_KEY",
-    authDomain: "YOUR_AUTH_DOMAIN",
-    databaseURL: "YOUR_DATABASE_URL",
-    projectId: "YOUR_PROJECT_ID",
-    storageBucket: "YOUR_STORAGE_BUCKET",
-    messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-    appId: "YOUR_APP_ID"
+  apiKey: "AIzaSyC2fDuaCFka3q-3MuGoMWCxQnwzXSiaUig",
+  authDomain: "multiplayergame-70906.firebaseapp.com",
+  projectId: "multiplayergame-70906",
+  storageBucket: "multiplayergame-70906.firebasestorage.app",
+  messagingSenderId: "449303847814",
+  appId: "1:449303847814:web:a5e5915e47aad5e4110207",
+  measurementId: "G-ET0ZR25PQE"
 };
 
 const colors = ['#ff4444', '#44ff44', '#4444ff', '#ffff44', '#ff44ff', '#44ffff'];
