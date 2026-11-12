@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Multiplayer Physics Test</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div id="menu">
+        <h2>Physics Room</h2>
+        <input type="text" id="usernameInput" placeholder="Username" maxlength="15">
+        <input type="text" id="roomInput" placeholder="Room Code">
+        <input type="password" id="passInput" placeholder="Password">
+        <button id="createBtn">Create Room</button>
+        <button id="joinBtn">Join Room</button>
+    </div>
+    <div id="game-container" style="display: none;">
+        <canvas id="gameCanvas" width="800" height="600"></canvas>
+        <div id="ui-overlay">Room: <span id="roomDisplay"></span> | FPS: <span id="fpsDisplay">60</span></div>
+    </div>
+    <script type="module" src="main.js"></script>
+</body>
+</html>
