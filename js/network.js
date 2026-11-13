@@ -1,6 +1,6 @@
-import { joinRoom } from 'https://esm.run/trystero';
+import { joinRoom } from 'https://esm.run/@trystero-p2p/firebase';
 
-const APP_ID = '1:449303847814:web:a5e5915e47aad5e4110207';
+const APP_ID = 'https://multiplayergame-70906-default-rtdb.firebaseio.com';
 
 export async function connectRoom({ code, password = '', profile, create = false, callbacks = {} }) {
   const roomId = `multiplayer-game-${String(code).toLowerCase()}`;
@@ -8,6 +8,7 @@ export async function connectRoom({ code, password = '', profile, create = false
   if (password) config.password = password;
 
   const room = joinRoom(config, roomId);
+  
   room.onError(error => {
     const message = error?.code === 'decrypt-failed'
       ? 'Wrong room password.'
@@ -91,18 +92,12 @@ export async function connectRoom({ code, password = '', profile, create = false
     publishRoster();
     callbacks.onUserLeave?.(leavingId);
     if (roomMeta.hostId === leavingId) {
-      const candidates = [userId, ...Object.keys(room.getUsers())].sort();
+      const candidates = [userId, ...room.getPeers()].sort();
       if (candidates[0] === userId) {
         roomMeta = { ...roomMeta, hostId: userId };
         announceMeta();
       }
     }
-  });
-
-  room.onError(error => {
-    callbacks.onStatus?.(error?.code === 'peer-connect-failed'
-      ? 'A peer could not connect. Some networks need a TURN relay.'
-      : `Network: ${error?.message || error?.code || 'unknown error'}`);
   });
 
   if (create) announceMeta();
