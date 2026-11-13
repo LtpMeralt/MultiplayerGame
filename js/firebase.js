@@ -1,7 +1,10 @@
-// Firebase is used for saved profiles only. Trystero handles live room traffic.
+// Firebase stores player profiles and the small public-room directory.
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInAnonymously } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-auth.js';
-import { getFirestore, doc, getDoc, setDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-firestore.js';
+import {
+  getFirestore, doc, getDoc, setDoc, serverTimestamp, deleteDoc,
+  collection, onSnapshot, Timestamp
+} from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-firestore.js';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyC2fDuaCFka3q-3MuGoMWCxQnwzXSiaUig',
@@ -13,8 +16,6 @@ const firebaseConfig = {
   measurementId: 'G-ET0ZR25PQE'
 };
 
-let firebaseServices = null;
-
 export async function initProfileStore() {
   try {
     const app = initializeApp(firebaseConfig);
@@ -23,7 +24,6 @@ export async function initProfileStore() {
     let user = await waitForAuthState(auth);
     if (!user) user = (await signInAnonymously(auth)).user;
 
-    firebaseServices = { db, uid: user.uid };
     return {
       ready: true,
       uid: user.uid,
@@ -37,15 +37,38 @@ export async function initProfileStore() {
         }
       },
       async saveProfile(profile) {
-        const safeProfile = sanitizeProfile(profile);
         await setDoc(doc(db, 'users', user.uid), {
-          ...safeProfile,
-          updatedAt: serverTimestamp()
+          ...sanitizeProfile(profile), updatedAt: serverTimestamp()
         }, { merge: true });
+      },
+      async publishRoom(room) {
+        const code = String(room.code).toUpperCase();
+        await setDoc(doc(db, 'publicRooms', code), {
+          code,
+          name: String(room.name || 'Room').slice(0, 28),
+          hostName: String(room.hostName || 'Player').slice(0, 18),
+          ownerId: user.uid,
+          players: Math.max(1, Math.min(32, Number(room.players) || 1)),
+          hasPassword: Boolean(room.hasPassword),
+          updatedAt: serverTimestamp(),
+          expiresAt: Timestamp.fromMillis(Date.now() + 90000)
+        });
+      },
+      async removeRoom(code) {
+        await deleteDoc(doc(db, 'publicRooms', String(code).toUpperCase()));
+      },
+      watchPublicRooms(onRooms, onError = console.warn) {
+        return onSnapshot(collection(db, 'publicRooms'), snapshot => {
+          const now = Date.now();
+          const rooms = snapshot.docs.map(item => ({ id: item.id, ...item.data() }))
+            .filter(room => room.expiresAt?.toMillis?.() > now)
+            .sort((a, b) => (b.players || 0) - (a.players || 0));
+          onRooms(rooms);
+        }, onError);
       }
     };
   } catch (error) {
-    console.warn('Firebase profile storage is unavailable; local saving remains enabled.', error);
+    console.warn('Firebase unavailable; local profile saving remains enabled.', error);
     return { ready: false, uid: null, loadProfile: async () => null, saveProfile: async () => { throw error; } };
   }
 }
@@ -54,12 +77,9 @@ function waitForAuthState(auth) {
   return new Promise(resolve => {
     let unsubscribe = () => {};
     unsubscribe = onAuthStateChanged(auth, user => {
-      unsubscribe();
-      resolve(user);
+      unsubscribe(); resolve(user);
     }, error => {
-      unsubscribe();
-      console.warn('Firebase auth state error:', error);
-      resolve(null);
+      unsubscribe(); console.warn('Firebase auth state error:', error); resolve(null);
     });
   });
 }
