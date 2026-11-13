@@ -1,14 +1,21 @@
 import { joinRoom } from 'https://esm.run/trystero';
 
-const APP_ID = 'com.ltpmer.trajectory-lab';
+const APP_ID = 'ltpmer/multiplayer-game';
 
 export async function connectRoom({ code, password = '', profile, create = false, callbacks = {} }) {
-  const roomId = `trajectory-lab-${String(code).toLowerCase()}`;
+  const roomId = `multiplayer-game-${String(code).toLowerCase()}`;
   const config = { appId: APP_ID };
   if (password) config.password = password;
 
-  const room = joinRoom(config, roomId, {
-    onJoinError: ({ error }) => callbacks.onStatus?.(`Connection issue: ${error?.message || 'peer connection failed'}`)
+  const room = joinRoom(config, roomId);
+  room.onError(error => {
+    const message = error?.code === 'decrypt-failed'
+      ? 'Wrong room password.'
+      : error?.code === 'peer-connect-failed'
+        ? 'Could not connect to a player. Their network may block peer connections.'
+        : error?.message || error?.code || 'Unknown room error';
+    callbacks.onStatus?.(message);
+    callbacks.onError?.(error);
   });
 
   const { userId } = await room.getSelf();
