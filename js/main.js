@@ -10,7 +10,8 @@ const ui = {
   lobby: $('lobbyScreen'), game: $('gameScreen'),
   username: $('usernameInput'), color: $('colorInput'), avatar: $('avatarPreview'),
   saveProfile: $('saveProfileButton'), saveStatus: $('saveStatus'),
-  createPassword: $('createPasswordInput'), roomCode: $('roomCodeInput'), joinPassword: $('joinPasswordInput'),
+  createPassword: $('createPasswordInput'), publicRoom: $('publicRoomInput'), roomCode: $('roomCodeInput'), joinPassword: $('joinPasswordInput'),
+  publicRoomList: $('publicRoomList'), refreshRooms: $('refreshRoomsButton'),
   createRoom: $('createRoomButton'), joinRoom: $('joinRoomButton'), solo: $('soloButton'),
   lobbyMessage: $('lobbyMessage'), connectionDot: $('connectionDot'), connectionText: $('connectionText'),
   leave: $('leaveRoomButton'), activeCode: $('activeRoomCode'), copyInvite: $('copyInviteButton'), hostBadge: $('hostBadge'),
@@ -22,6 +23,9 @@ const ui = {
 const DEFAULT_PROFILE = { name: 'Player', color: '#72e4c5' };
 let profile = readLocalProfile();
 let profileStore = null;
+let publicRoomsUnsubscribe = null;
+let publicRoomHeartbeat = null;
+let activeRoomIsPublic = false;
 let network = null;
 let roomCode = 'LOCAL';
 let roomPassword = '';
@@ -60,6 +64,7 @@ ui.copyInvite.addEventListener('click', copyInvite);
 ui.resetRound.addEventListener('click', hostResetRound);
 ui.mapSelect.addEventListener('change', () => hostChangeMap(ui.mapSelect.value));
 ui.roomCode.addEventListener('input', () => { ui.roomCode.value = ui.roomCode.value.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 12); });
+ui.refreshRooms?.addEventListener('click', refreshPublicRooms);
 
 ui.canvas.addEventListener('pointerdown', onPointerDown);
 ui.canvas.addEventListener('pointermove', onPointerMove);
@@ -74,6 +79,7 @@ async function bootProfileStore() {
   try {
     profileStore = await initProfileStore();
     if (profileStore.ready) {
+      startPublicRoomBrowser();
       const cloudProfile = await profileStore.loadProfile();
       if (cloudProfile && !localStorage.getItem('trajectoryLabProfile')) {
         profile = sanitizeProfile(cloudProfile);
@@ -112,14 +118,15 @@ async function saveProfile() {
   renderRoster();
 }
 
-async function handleRoomEntry(create) {
+async function handleRoomEntry(create, requestedCode = null, requestedPassword = null) {
   profile = sanitizeProfile({ name: ui.username.value, color: ui.color.value });
   writeLocalProfile(profile);
   network?.leave?.();
   network = null;
 
-  const code = create ? makeRoomCode() : ui.roomCode.value.trim().toUpperCase();
-  const password = create ? ui.createPassword.value : ui.joinPassword.value;
+  const code = create ? makeRoomCode() : String(requestedCode || ui.roomCode.value).trim().toUpperCase();
+  const password = create ? ui.createPassword.value : (requestedPassword ?? ui.joinPassword.value);
+  activeRoomIsPublic = create && Boolean(ui.publicRoom?.checked);
   if (!create && code.length < 4) {
     setLobbyMessage('Enter a room code with at least 4 characters.', true);
     return;
@@ -141,7 +148,7 @@ async function handleRoomEntry(create) {
         onUserLeave: userId => remotePlayers.delete(userId),
         onEvent: handleRoomEvent,
         onMeta: handleRoomMeta,
-        onStatus: message => { ui.networkStatus.textContent = message; }
+        onStatus: message => { ui.networkStatus.textContent = message; showToast(message); }
       }
     });
     roomCode = code;
@@ -156,6 +163,7 @@ async function handleRoomEntry(create) {
     showToast(create ? `Room ${code} created` : `Joined room ${code}`);
     if (create) {
       network.setMap('default');
+      if (activeRoomIsPublic) startPublicRoomHeartbeat();
     } else {
       // The host sends its room metadata when a peer asks who is hosting.
       setTimeout(() => {
@@ -171,6 +179,87 @@ async function handleRoomEntry(create) {
     ui.createRoom.disabled = false;
     ui.joinRoom.disabled = false;
   }
+}
+
+function startPublicRoomBrowser() {
+  if (!profileStore?.ready || !profileStore.watchPublicRooms || publicRoomsUnsubscribe) return;
+  publicRoomsUnsubscribe = profileStore.watchPublicRooms(renderPublicRooms, error => {
+    console.warn('Public room browser unavailable:', error);
+    if (ui.publicRoomList) ui.publicRoomList.innerHTML = '<div class="room-empty">Room browser unavailable. Check Firestore rules.</div>';
+  });
+}
+
+function refreshPublicRooms() {
+  if (ui.publicRoomList) ui.publicRoomList.innerHTML = '<div class="room-empty">Refreshing…</div>';
+  if (publicRoomsUnsubscribe) {
+    publicRoomsUnsubscribe();
+    publicRoomsUnsubscribe = null;
+  }
+  startPublicRoomBrowser();
+}
+
+function renderPublicRooms(rooms) {
+  if (!ui.publicRoomList) return;
+  ui.publicRoomList.replaceChildren();
+  if (!rooms.length) {
+    const empty = document.createElement('div');
+    empty.className = 'room-empty';
+    empty.textContent = 'No public rooms right now. Make one and tick the public option!';
+    ui.publicRoomList.append(empty);
+    return;
+  }
+  for (const room of rooms) {
+    const item = document.createElement('div');
+    item.className = 'public-room-item';
+    const info = document.createElement('div');
+    info.className = 'public-room-info';
+    const name = document.createElement('strong');
+    name.textContent = room.name || `${room.hostName || 'Player'}’s room`;
+    const meta = document.createElement('span');
+    meta.textContent = `${room.code} · ${room.players || 1} player${room.players === 1 ? '' : 's'}${room.hasPassword ? ' · 🔒' : ''}`;
+    info.append(name, meta);
+    const join = document.createElement('button');
+    join.type = 'button';
+    join.className = 'button button-quiet room-join-button';
+    join.textContent = 'Join';
+    join.addEventListener('click', () => {
+      const password = room.hasPassword ? window.prompt('This room needs a password:') : '';
+      if (password === null) return;
+      ui.roomCode.value = room.code;
+      ui.joinPassword.value = password;
+      handleRoomEntry(false, room.code, password);
+    });
+    item.append(info, join);
+    ui.publicRoomList.append(item);
+  }
+}
+
+async function publishCurrentPublicRoom() {
+  if (!profileStore?.ready || !activeRoomIsPublic || !network?.isHost) return;
+  await profileStore.publishRoom({
+    code: roomCode,
+    name: `${profile.name}’s room`,
+    hostName: profile.name,
+    players: Math.max(1, Object.keys(network.getRoster()).length),
+    hasPassword: Boolean(roomPassword)
+  });
+}
+
+function startPublicRoomHeartbeat() {
+  stopPublicRoomHeartbeat(false);
+  publishCurrentPublicRoom().catch(error => console.warn('Could not publish room:', error));
+  publicRoomHeartbeat = setInterval(() => {
+    publishCurrentPublicRoom().catch(error => console.warn('Could not refresh room listing:', error));
+  }, 30000);
+}
+
+function stopPublicRoomHeartbeat(removeListing) {
+  if (publicRoomHeartbeat) clearInterval(publicRoomHeartbeat);
+  publicRoomHeartbeat = null;
+  if (removeListing && activeRoomIsPublic && profileStore?.ready) {
+    profileStore.removeRoom(roomCode).catch(error => console.warn('Could not remove public room:', error));
+  }
+  activeRoomIsPublic = false;
 }
 
 function startLocalGame() {
@@ -210,6 +299,7 @@ function startGameScreen() {
 }
 
 async function leaveRoom() {
+  stopPublicRoomHeartbeat(true);
   if (network) {
     try { await network.leave(); } catch (error) { console.warn(error); }
   }
@@ -240,6 +330,7 @@ function handleRoster(roster) {
   }
   renderRoster();
   const count = Object.keys(profiles).length || 1;
+  if (activeRoomIsPublic && network?.isHost) publishCurrentPublicRoom().catch(error => console.warn('Public room update failed:', error));
   ui.networkStatus.textContent = count > 1 ? `${count} players in room` : (network ? 'Waiting for players…' : 'Local physics test');
   if (roomMode === 'online') setConnectionState(count > 1 ? 'PEER CONNECTED' : 'WAITING FOR PEERS', count > 1);
 }
@@ -400,7 +491,7 @@ function getAimVelocity(body, pointer) {
 function onKeyDown(event) {
   if (!localPlayer || ui.game.classList.contains('hidden') || isTypingTarget(event.target)) return;
   const key = event.key.toLowerCase();
-  if (key === ' ' || key === 'arrowup') {
+  if (key === 'w' || key === 'arrowup') {
     event.preventDefault();
     if (!event.repeat) {
       localPlayer.launch(localPlayer.body.vx, -820);
@@ -566,7 +657,7 @@ function drawAimPreview(ctx) {
 }
 
 function copyInvite() {
-  const invite = `Trajectory Lab room\nCode: ${roomCode}\nPassword: ${roomPassword || '(no password)'}`;
+  const invite = `Multiplayer game room\nCode: ${roomCode}\nPassword: ${roomPassword || '(no password)'}`;
   if (navigator.clipboard?.writeText) {
     navigator.clipboard.writeText(invite).then(() => showToast('Room invite copied')).catch(() => showToast(invite));
   } else {
