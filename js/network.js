@@ -1,6 +1,6 @@
 import { joinRoom } from 'https://esm.run/trystero';
 
-const APP_ID = 'ltpmer/multiplayer-game';
+const APP_ID = 'ltpmer/1:449303847814:web:a5e5915e47aad5e4110207';
 
 export async function connectRoom({ code, password = '', profile, create = false, callbacks = {} }) {
   const roomId = `multiplayer-game-${String(code).toLowerCase()}`;
