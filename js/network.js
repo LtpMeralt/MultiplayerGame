@@ -1,6 +1,6 @@
 import { joinRoom } from 'https://esm.run/@trystero-p2p/firebase';
 
-const APP_ID = 'https://multiplayergame-70906-default-rtdb.firebaseio.com';
+const APP_ID = 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app/:1';
 
 export async function connectRoom({ code, password = '', profile, create = false, callbacks = {} }) {
   const roomId = `multiplayer-game-${String(code).toLowerCase()}`;
