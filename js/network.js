@@ -36,14 +36,35 @@ export async function connectRoom({ code, password = '', profile, create = false
   };
   let left = false;
 
+  const checkDuplicateName = (incomingRoster) => {
+    const myLowerName = profile.name.trim().toLowerCase();
+    for (const [id, data] of Object.entries(incomingRoster)) {
+      if (id !== userId && data?.name?.trim().toLowerCase() === myLowerName) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const getRoster = () => {
     const roster = presence.getAll() || {};
     return { ...roster, [userId]: { name: profile.name, color: profile.color } };
   };
-  const publishRoster = () => callbacks.onRoster?.(getRoster());
+
+  const publishRoster = () => {
+    const roster = getRoster();
+    if (checkDuplicateName(roster)) {
+      callbacks.onStatus?.('Username already taken in this room.');
+      room.leave();
+      throw new Error('Username taken');
+    }
+    callbacks.onRoster?.(roster);
+  };
+
   const publishMeta = () => callbacks.onMeta?.({ ...roomMeta, isHost: roomMeta.hostId === userId });
 
-  presence.onChange(publishRoster);
+  presence.onChange(() => publishRoster());
+
   stateAction.onMessage((data, context) => {
     if (!data || context.userId === userId) return;
     callbacks.onPlayerState?.(context.userId, data);
@@ -83,7 +104,8 @@ export async function connectRoom({ code, password = '', profile, create = false
     publishMeta();
   };
 
-  room.onUserJoin(() => {
+  room.onUserJoin((peerId) => {
+    presence.set({ name: profile.name, color: profile.color });
     publishRoster();
     if (roomMeta.hostId === userId) announceMeta();
   });
@@ -107,6 +129,12 @@ export async function connectRoom({ code, password = '', profile, create = false
     if (roomMeta.hostId === userId) announceMeta();
     publishRoster();
   }, 2500);
+
+  // Force an initial broadcast right after joining
+  setTimeout(() => {
+    presence.set({ name: profile.name, color: profile.color });
+    publishRoster();
+  }, 300);
 
   return {
     userId,
