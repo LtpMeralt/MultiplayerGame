@@ -1,67 +1,93 @@
 import { createBody, stepBody } from './physics.js';
 
-const WALK_SPEED = 390;
-const GROUND_ACCELERATION = 2200;
-const AIR_ACCELERATION = 900;
+
+const WALK_SPEED = 520;
+const GROUND_ACCELERATION = 2600;
+const AIR_ACCELERATION = 1050;
 const MAX_LAUNCH_SPEED = 1850;
 
 export class LocalPlayer {
-  constructor(userId, profile, spawn) {
-    this.userId = userId;
-    this.name = profile.name;
-    this.color = profile.color;
-    this.body = createBody(spawn.x, spawn.y, 18);
-    this.isLocal = true;
-  }
-
-  updateProfile(profile) {
-    this.name = profile.name;
-    this.color = profile.color;
-  }
-
-  move(direction, dt) {
-    if (!direction) return;
-
-    const acceleration = this.body.onGround ? GROUND_ACCELERATION : AIR_ACCELERATION;
-    const velocityInInputDirection = direction * this.body.vx;
-
-    // Accelerate towards a comfortable walking speed, but preserve launch momentum.
-    if (velocityInInputDirection < WALK_SPEED) {
-      this.body.vx += direction * acceleration * dt;
-      this.body.vx = Math.max(-MAX_LAUNCH_SPEED, Math.min(MAX_LAUNCH_SPEED, this.body.vx));
+    constructor(userId, profile, spawn) {
+        this.userId = userId;
+        this.name = profile.name;
+        this.color = profile.color;
+        this.body = createBody(spawn.x, spawn.y, 18);
+        this.isLocal = true;
     }
-  }
 
-  jump() {
-    // W/Up is a normal jump, not another launch. It only works while grounded.
-    if (!this.body.onGround) return false;
+    updateProfile(profile) {
+        this.name = profile.name;
+        this.color = profile.color;
+    }
 
-    this.body.vy = -760;
-    this.body.onGround = false;
-    return true;
-  }
+    move(direction, dt) {
+        if (!direction) return;
 
-  launch(vx, vy) {
-    // Dragging and releasing is intentionally allowed both on the ground and mid-air.
-    this.body.vx = Math.max(-MAX_LAUNCH_SPEED, Math.min(MAX_LAUNCH_SPEED, vx));
-    this.body.vy = Math.max(-MAX_LAUNCH_SPEED, Math.min(MAX_LAUNCH_SPEED, vy));
-    this.body.onGround = false;
-  }
+        const body = this.body;
 
-  reset(spawn) {
-    this.body = createBody(spawn.x, spawn.y, this.body.radius);
-  }
+        const acceleration = body.onGround
+            ? GROUND_ACCELERATION
+            : AIR_ACCELERATION;
 
-  snapshot() {
-    return {
-      x: this.body.x,
-      y: this.body.y,
-      vx: this.body.vx,
-      vy: this.body.vy,
-      radius: this.body.radius,
-      onGround: this.body.onGround
-    };
-  }
+        const oldSpeed = body.vx * direction;
+
+        if (oldSpeed < WALK_SPEED) {
+            const nextVelocity =
+                body.vx + direction * acceleration * dt;
+
+            if (nextVelocity * direction > WALK_SPEED &&
+                oldSpeed < WALK_SPEED) {
+                body.vx = direction * WALK_SPEED;
+            } else {
+                body.vx = Math.max(
+                    -MAX_LAUNCH_SPEED,
+                    Math.min(MAX_LAUNCH_SPEED, nextVelocity)
+                );
+            }
+        }
+    }
+
+    jump() {
+        if (!this.body.onGround) return false;
+
+        this.body.vy = -760;
+        this.body.onGround = false;
+
+        return true;
+    }
+
+    launch(vx, vy) {
+        this.body.vx = Math.max(
+            -MAX_LAUNCH_SPEED,
+            Math.min(MAX_LAUNCH_SPEED, vx)
+        );
+
+        this.body.vy = Math.max(
+            -MAX_LAUNCH_SPEED,
+            Math.min(MAX_LAUNCH_SPEED, vy)
+        );
+
+        this.body.onGround = false;
+    }
+
+    reset(spawn) {
+        this.body = createBody(
+            spawn.x,
+            spawn.y,
+            this.body.radius
+        );
+    }
+
+    snapshot() {
+        return {
+            x: this.body.x,
+            y: this.body.y,
+            vx: this.body.vx,
+            vy: this.body.vy,
+            radius: this.body.radius,
+            onGround: this.body.onGround
+        };
+    }
 }
 
 export class RemotePlayer {
