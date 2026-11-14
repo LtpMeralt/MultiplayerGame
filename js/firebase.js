@@ -5,7 +5,7 @@ import {
   getFirestore, doc, getDoc, setDoc, serverTimestamp, deleteDoc,
   collection, onSnapshot, Timestamp
 } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-firestore.js';
-export const rtdb = getDatabase(app, 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app');
+import { getDatabase } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyC2fDuaCFka3q-3MuGoMWCxQnwzXSiaUig',
@@ -15,22 +15,12 @@ const firebaseConfig = {
   messagingSenderId: '449303847814',
   appId: '1:449303847814:web:a5e5915e47aad5e4110207',
   measurementId: 'G-ET0ZR25PQE',
-  databaseURL: 'https://console.firebase.google.com/u/0/project/multiplayergame-70906/database/multiplayergame-70906-default-rtdb'
+  databaseURL: 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app'
 };
 
-let app = null;
-let db = null;
-let rtdb = null;
-
-try {
-  app = initializeApp(firebaseConfig);
-  db = getFirestore(app);
-  rtdb = getDatabase(app, 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app');
-} catch (error) {
-  console.warn('Firebase init error:', error);
-}
-
-export { app as firebaseApp, rtdb };
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+export const rtdb = getDatabase(app, 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app');
 
 export async function initProfileStore() {
   try {
