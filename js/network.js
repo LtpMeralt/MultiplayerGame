@@ -1,10 +1,11 @@
-
 import { joinRoom } from 'https://esm.run/@trystero-p2p/firebase@0.27.0';
+import { app } from './firebase.js';
 
 const FIREBASE_DATABASE_URL =
     'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app';
 
 const APP_ID = FIREBASE_DATABASE_URL;
+
 const FIREBASE_PATH = '__trystero__';
 const MAX_PLAYERS = 32;
 
