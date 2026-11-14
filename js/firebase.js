@@ -5,6 +5,7 @@ import {
   getFirestore, doc, getDoc, setDoc, serverTimestamp, deleteDoc,
   collection, onSnapshot, Timestamp
 } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-firestore.js';
+import { getDatabase } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-database.js';
 
 const firebaseConfig = {
   apiKey: 'AIzaSyC2fDuaCFka3q-3MuGoMWCxQnwzXSiaUig',
@@ -16,11 +17,23 @@ const firebaseConfig = {
   measurementId: 'G-ET0ZR25PQE'
 };
 
+let app = null;
+let db = null;
+let rtdb = null;
+
+try {
+  app = initializeApp(firebaseConfig);
+  db = getFirestore(app);
+  rtdb = getDatabase(app, 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app');
+} catch (error) {
+  console.warn('Firebase init error:', error);
+}
+
+export { app as firebaseApp, rtdb };
+
 export async function initProfileStore() {
   try {
-    const app = initializeApp(firebaseConfig);
     const auth = getAuth(app);
-    const db = getFirestore(app);
     let user = await waitForAuthState(auth);
     if (!user) user = (await signInAnonymously(auth)).user;
 
