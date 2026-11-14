@@ -18,7 +18,7 @@ const firebaseConfig = {
   databaseURL: 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app'
 };
 
-const app = initializeApp(firebaseConfig);
+export const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 export const rtdb = getDatabase(app, 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app');
 
