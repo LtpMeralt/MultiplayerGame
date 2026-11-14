@@ -1,467 +1,461 @@
 
-import { joinRoom } from 'https://esm.run/trystero?v=2';
+import { joinRoom } from 'https://esm.run/@trystero-p2p/firebase@0.27.0';
 
-const APP_ID = 'ltpmer-multiplayer-game-v1';
+const FIREBASE_DATABASE_URL =
+    'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app';
 
-export async function connectRoom({ code, password = '', profile, create = false, callbacks = {} }) {
-  const roomId = `multiplayer-game-${String(code).toLowerCase()}`;
-  const config = {
-      appId: APP_ID,
-      relayConfig: {
-          warnOnRelayFailure: false
-      }
-  };
+const APP_ID = FIREBASE_DATABASE_URL;
+const FIREBASE_PATH = '__trystero__';
+const MAX_PLAYERS = 32;
 
-  if (password) config.password = password;
+export async function connectRoom({
+    code,
+    password = '',
+    profile,
+    create = false,
+    callbacks = {}
+}) {
+    const roomId = `multiplayer-game-${String(code).trim().toLowerCase()}`;
 
-  const room = joinRoom(config, roomId);
+    const config = {
+        appId: APP_ID,
+        maxUsers: MAX_PLAYERS,
+        relayConfig: {
+            firebasePath: FIREBASE_PATH
+        }
+    };
 
-  room.onError(error => {
-    const message = error?.code === 'decrypt-failed'
-      ? 'Wrong room password.'
-      : error?.code === 'peer-connect-failed'
-        ? 'Could not connect to a player. Their network may block peer connections.'
-        : error?.message || error?.code || 'Unknown room error';
+    if (password) config.password = password;
 
-    callbacks.onStatus?.(message);
-    callbacks.onError?.(error);
-  });
+    const room = joinRoom(config, roomId);
 
-  const { userId } = await room.getSelf();
+    let left = false;
+    let metaHeartbeat = null;
+    let pingHeartbeat = null;
+    let pingInFlight = false;
 
-  const presence = room.makeUserState('player-profile', {
-    name: profile.name,
-    color: profile.color
-  });
+    let stateInFlight = false;
+    let queuedState = null;
 
-  presence.set({ name: profile.name, color: profile.color });
+    const peerPings = new Map();
 
-  const stateAction = room.makeAction('orb-state');
-  const eventAction = room.makeAction('orb-event');
-  const metaAction = room.makeAction('orb-meta');
-  const pingAction = room.makeAction('orb-ping');
+    room.onError(error => {
+        let message = error?.message || error?.code || 'Unknown room error';
 
-  let roomMeta = {
-    hostId: create ? userId : null,
-    mapId: 'default'
-  };
+        if (error?.code === 'decrypt-failed') {
+            message = 'Wrong room password.';
+        } else if (error?.code === 'peer-connect-failed') {
+            message = error?.turnConfigured
+                ? 'Peer connection failed. Check the other player’s network.'
+                : 'Players found, but this network may require a TURN relay.';
+        } else if (error?.code === 'relay-failed') {
+            message = 'Firebase signaling failed. Check Realtime Database rules.';
+        } else if (error?.code === 'room-full') {
+            message = `Room is full. Maximum: ${MAX_PLAYERS} players.`;
+        }
 
-  let left = false;
-  let pingSequence = 0;
-  let pingHeartbeat = null;
+        callbacks.onStatus?.(message);
+        callbacks.onError?.(error);
+    });
 
-  const pendingPings = new Map();
-  const peerPings = new Map();
+    const { userId } = await room.getSelf();
 
-  const checkDuplicateName = incomingRoster => {
-    const myLowerName = profile.name.trim().toLowerCase();
+    const presence = room.makeUserState('player-profile', {
+        name: 'Player',
+        color: '#72e4c5'
+    });
 
-    for (const [id, data] of Object.entries(incomingRoster)) {
-      if (
-        id !== userId &&
-        data?.name?.trim().toLowerCase() === myLowerName
-      ) {
-        return true;
-      }
-    }
-
-    return false;
-  };
-
-  const getRoster = () => {
-    const roster = presence.getAll() || {};
-
-    return {
-      ...roster,
-      [userId]: {
+    presence.set({
         name: profile.name,
         color: profile.color
-      }
-    };
-  };
-
-  const publishRoster = () => {
-    const roster = getRoster();
-
-    if (checkDuplicateName(roster)) {
-      callbacks.onStatus?.('Username already taken in this room.');
-      room.leave();
-      throw new Error('Username taken');
-    }
-
-    callbacks.onRoster?.(roster);
-  };
-
-  const publishMeta = () => {
-    callbacks.onMeta?.({
-      ...roomMeta,
-      isHost: roomMeta.hostId === userId
     });
-  };
 
-  // Safely retrieve peer IDs.
-  // Trystero getPeers() returns an object, not an array.
-  const getPeerIds = () => {
-    const peers = room.getPeers?.();
+    const stateAction = room.makeAction('orb-state');
+    const eventAction = room.makeAction('orb-event');
+    const metaAction = room.makeAction('orb-meta');
 
-    if (!peers) return [];
-
-    if (peers instanceof Map) {
-      return [...peers.keys()];
-    }
-
-    if (Array.isArray(peers)) {
-      return peers;
-    }
-
-    if (typeof peers === 'object') {
-      return Object.keys(peers);
-    }
-
-    return [];
-  };
-
-  // Publish average ping across connected peers.
-  const publishPing = () => {
-    const values = [...peerPings.values()];
-
-    if (values.length === 0) {
-      callbacks.onPing?.({
-        average: null,
-        min: null,
-        max: null,
-        peers: 0
-      });
-
-      return;
-    }
-
-    const average =
-      values.reduce((sum, value) => sum + value, 0) / values.length;
-
-    callbacks.onPing?.({
-      average,
-      min: Math.min(...values),
-      max: Math.max(...values),
-      peers: values.length
-    });
-  };
-
-  // Send individual ping requests to every peer.
-  const sendPings = () => {
-    if (left) return;
-
-    const peers = getPeerIds();
-
-    for (const peerId of peers) {
-      const id = String(++pingSequence);
-      const key = `${peerId}:${id}`;
-
-      pendingPings.set(key, performance.now());
-
-      pingAction.send(
-        { type: 'ping', id },
-        { target: peerId }
-      ).catch(() => {
-        pendingPings.delete(key);
-      });
-    }
-
-    // Remove stale unanswered requests.
-    if (pendingPings.size > 64) {
-      pendingPings.clear();
-    }
-
-    // Remove disconnected peers from ping statistics.
-    const connectedPeers = new Set(peers);
-
-    for (const peerId of [...peerPings.keys()]) {
-      if (!connectedPeers.has(peerId)) {
-        peerPings.delete(peerId);
-      }
-    }
-
-    publishPing();
-  };
-
-  // Receive ping requests and respond.
-  pingAction.onMessage((data, context) => {
-    if (!data || context.userId === userId) return;
-
-    if (data.type === 'ping' && typeof data.id === 'string') {
-      pingAction.send(
-        { type: 'pong', id: data.id },
-        { target: context.userId }
-      ).catch(() => {});
-
-      return;
-    }
-
-    // Calculate RTT from received pong.
-    if (data.type === 'pong' && typeof data.id === 'string') {
-      const key = `${context.userId}:${data.id}`;
-      const startedAt = pendingPings.get(key);
-
-      if (startedAt === undefined) return;
-
-      pendingPings.delete(key);
-
-      const ping = Math.max(
-        0,
-        performance.now() - startedAt
-      );
-
-      peerPings.set(context.userId, ping);
-
-      publishPing();
-    }
-  });
-
-  presence.onChange(() => publishRoster());
-
-  stateAction.onMessage((data, context) => {
-    if (!data || context.userId === userId) return;
-
-    callbacks.onPlayerState?.(context.userId, data);
-  });
-
-  eventAction.onMessage((data, context) => {
-    if (!data || context.userId === userId) return;
-
-    callbacks.onEvent?.(data, context.userId);
-  });
-
-  function acceptMeta(data, fromId) {
-    if (!data || typeof data.hostId !== 'string') return;
-
-    const currentHostLeft =
-      roomMeta.hostId && !room.getUsers()[roomMeta.hostId];
-
-    const isCurrentHost = fromId === roomMeta.hostId;
-    const isSelfPromoting =
-      data.hostId === fromId && currentHostLeft;
-
-    const firstHostClaim =
-      !roomMeta.hostId && data.hostId === fromId;
-
-    if (!isCurrentHost && !isSelfPromoting && !firstHostClaim) {
-      return;
-    }
-
-    roomMeta = {
-      hostId: data.hostId,
-      mapId: typeof data.mapId === 'string'
-        ? data.mapId
-        : roomMeta.mapId
+    let roomMeta = {
+        hostId: create ? userId : null,
+        mapId: 'default'
     };
 
-    publishMeta();
-  }
+    function getUserIds() {
+        return Object.keys(room.getUsers?.() || {});
+    }
 
-  metaAction.onMessage((data, context) => {
-    if (data?.type === 'who-host') {
-      if (roomMeta.hostId === userId) {
+    function getRoster() {
+        return {
+            ...(presence.getAll() || {}),
+            [userId]: {
+                name: profile.name,
+                color: profile.color
+            }
+        };
+    }
+
+    function publishRoster() {
+        if (!left) callbacks.onRoster?.(getRoster());
+    }
+
+    function publishMeta() {
+        callbacks.onMeta?.({
+            ...roomMeta,
+            isHost: roomMeta.hostId === userId
+        });
+    }
+
+    function publishPing() {
+        const values = [...peerPings.values()].filter(Number.isFinite);
+
+        if (!values.length) {
+            callbacks.onPing?.({
+                average: null,
+                min: null,
+                max: null,
+                peers: 0
+            });
+            return;
+        }
+
+        callbacks.onPing?.({
+            average: values.reduce((a, b) => a + b, 0) / values.length,
+            min: Math.min(...values),
+            max: Math.max(...values),
+            peers: values.length
+        });
+    }
+
+    // Use Trystero's built-in RTT measurement.
+    async function measurePing() {
+        if (left || pingInFlight) return;
+
+        pingInFlight = true;
+
+        try {
+            const userIds = getUserIds();
+            const activeUsers = new Set(userIds);
+
+            for (const id of [...peerPings.keys()]) {
+                if (!activeUsers.has(id)) {
+                    peerPings.delete(id);
+                }
+            }
+
+            if (!userIds.length) {
+                publishPing();
+                return;
+            }
+
+            const results = await Promise.all(
+                userIds.map(async targetId => {
+                    try {
+                        const rtt = await room.ping(targetId);
+                        return [targetId, Number(rtt)];
+                    } catch {
+                        return [targetId, null];
+                    }
+                })
+            );
+
+            if (left) return;
+
+            for (const [targetId, rtt] of results) {
+                if (Number.isFinite(rtt) && rtt >= 0) {
+                    peerPings.set(targetId, rtt);
+                }
+            }
+
+            publishPing();
+        } finally {
+            pingInFlight = false;
+        }
+    }
+
+    function announceMeta() {
+        if (left || roomMeta.hostId !== userId) return;
+
         metaAction.send({
-          type: 'meta',
-          hostId: roomMeta.hostId,
-          mapId: roomMeta.mapId
-        }, {
-          target: context.userId
+            type: 'meta',
+            hostId: roomMeta.hostId,
+            mapId: roomMeta.mapId
         }).catch(() => {});
-      }
 
-      return;
+        publishMeta();
     }
 
-    if (data?.type === 'meta') {
-      acceptMeta(data, context.userId);
-    }
-  });
+    function acceptMeta(data, fromId) {
+        if (!data || typeof data.hostId !== 'string') return;
 
-  const announceMeta = () => {
-    if (left || roomMeta.hostId !== userId) return;
+        const users = room.getUsers?.() || {};
 
-    metaAction.send({
-      type: 'meta',
-      hostId: roomMeta.hostId,
-      mapId: roomMeta.mapId
-    }).catch(() => {});
+        const hostIsPresent =
+            roomMeta.hostId === userId ||
+            Boolean(users[roomMeta.hostId]);
 
-    publishMeta();
-  };
+        const currentHostLeft =
+            Boolean(roomMeta.hostId) && !hostIsPresent;
 
-  room.onUserJoin(peerId => {
-    presence.set({
-      name: profile.name,
-      color: profile.color
-    });
+        const isCurrentHost = fromId === roomMeta.hostId;
 
-    publishRoster();
+        const isSelfPromoting =
+            data.hostId === fromId && currentHostLeft;
 
-    if (roomMeta.hostId === userId) {
-      announceMeta();
-    }
+        const firstHostClaim =
+            !roomMeta.hostId && data.hostId === fromId;
 
-    sendPings();
-  });
+        if (!isCurrentHost && !isSelfPromoting && !firstHostClaim) {
+            return;
+        }
 
-  room.onUserLeave(({ userId: leavingId }) => {
-    publishRoster();
-
-    callbacks.onUserLeave?.(leavingId);
-
-    peerPings.delete(leavingId);
-
-    for (const key of [...pendingPings.keys()]) {
-      if (key.startsWith(`${leavingId}:`)) {
-        pendingPings.delete(key);
-      }
-    }
-
-    publishPing();
-
-    // Transfer host ownership if necessary.
-    if (roomMeta.hostId === leavingId) {
-      const candidates = [
-        userId,
-        ...getPeerIds()
-      ].sort();
-
-      if (candidates[0] === userId) {
         roomMeta = {
-          ...roomMeta,
-          hostId: userId
+            hostId: data.hostId,
+            mapId: typeof data.mapId === 'string'
+                ? data.mapId
+                : roomMeta.mapId
         };
 
-        announceMeta();
-      }
-    }
-  });
-
-  if (create) {
-    announceMeta();
-  } else {
-    metaAction.send({
-      type: 'who-host'
-    }).catch(() => {});
-  }
-
-  // Ping every second.
-  pingHeartbeat = setInterval(sendPings, 1000);
-
-  setTimeout(sendPings, 250);
-
-  // Host metadata and roster heartbeat.
-  const heartbeat = setInterval(() => {
-    if (roomMeta.hostId === userId) {
-      announceMeta();
+        publishMeta();
     }
 
-    publishRoster();
-  }, 2500);
-
-  // Initial presence broadcast.
-  setTimeout(() => {
-    if (left) return;
-
-    presence.set({
-      name: profile.name,
-      color: profile.color
+    // Replay existing profiles too, not only future changes.
+    presence.onChange(() => publishRoster(), {
+        replay: true
     });
 
-    publishRoster();
-  }, 300);
+    stateAction.onMessage((data, context) => {
+        if (!data || context.userId === userId) return;
 
-  return {
-    userId,
+        callbacks.onPlayerState?.(context.userId, data);
+    });
 
-    get hostId() {
-      return roomMeta.hostId;
-    },
+    eventAction.onMessage((data, context) => {
+        if (!data || context.userId === userId) return;
 
-    get isHost() {
-      return roomMeta.hostId === userId;
-    },
+        callbacks.onEvent?.(data, context.userId);
+    });
 
-    getRoster,
+    metaAction.onMessage((data, context) => {
+        if (data?.type === 'who-host') {
+            if (roomMeta.hostId === userId) {
+                metaAction.send({
+                    type: 'meta',
+                    hostId: roomMeta.hostId,
+                    mapId: roomMeta.mapId
+                }, {
+                    target: context.userId
+                }).catch(() => {});
+            }
 
-    getMeta: () => ({ ...roomMeta }),
+            return;
+        }
 
-    getPing: () => {
-      const values = [...peerPings.values()];
+        if (data?.type === 'meta') {
+            acceptMeta(data, context.userId);
+        }
+    });
 
-      if (!values.length) return null;
+    room.onUserJoin(({ userId: joinedUserId }) => {
+        publishRoster();
 
-      return values.reduce(
-        (sum, value) => sum + value,
-        0
-      ) / values.length;
-    },
+        callbacks.onUserJoin?.(joinedUserId);
 
-    sendState(snapshot) {
-      if (!left) {
-        stateAction.send(snapshot).catch(() => {});
-      }
-    },
+        if (roomMeta.hostId === userId) {
+            announceMeta();
+        }
 
-    sendEvent(event) {
-      if (!left) {
-        eventAction.send(event).catch(() => {});
-      }
-    },
+        setTimeout(measurePing, 250);
+    }, {
+        replay: true
+    });
 
-    setMap(mapId) {
-      if (roomMeta.hostId !== userId) return false;
+    room.onUserLeave(({ userId: leavingUserId }) => {
+        callbacks.onUserLeave?.(leavingUserId);
 
-      roomMeta = {
-        ...roomMeta,
-        mapId
-      };
+        peerPings.delete(leavingUserId);
 
-      announceMeta();
+        setTimeout(() => {
+            if (left) return;
 
-      eventAction.send({
-        type: 'map',
-        mapId
-      }).catch(() => {});
+            publishRoster();
+            publishPing();
 
-      return true;
-    },
+            if (roomMeta.hostId === leavingUserId) {
+                const candidates = [
+                    userId,
+                    ...getUserIds()
+                ].sort();
 
-    resetRound() {
-      if (roomMeta.hostId !== userId) return false;
+                if (candidates[0] === userId) {
+                    roomMeta = {
+                        ...roomMeta,
+                        hostId: userId
+                    };
 
-      eventAction.send({
-        type: 'reset'
-      }).catch(() => {});
+                    announceMeta();
+                }
+            }
+        }, 0);
+    });
 
-      return true;
-    },
+    room.onPeerJoin(({ userId: joinedUserId, peerId }) => {
+        callbacks.onPeerConnection?.({
+            userId: joinedUserId,
+            peerId,
+            connected: true
+        });
 
-    updateProfile(nextProfile) {
-      presence.set({
-        name: nextProfile.name,
-        color: nextProfile.color
-      });
+        setTimeout(measurePing, 200);
+    }, {
+        replay: true
+    });
 
-      publishRoster();
-    },
+    room.onPeerLeave(({ userId: leftUserId, peerId }) => {
+        callbacks.onPeerConnection?.({
+            userId: leftUserId,
+            peerId,
+            connected: false
+        });
+    });
 
-    async leave() {
-      if (left) return;
-
-      left = true;
-
-      clearInterval(heartbeat);
-
-      if (pingHeartbeat) {
-        clearInterval(pingHeartbeat);
-      }
-
-      pendingPings.clear();
-      peerPings.clear();
-
-      await room.leave();
+    if (create) {
+        announceMeta();
+    } else {
+        metaAction.send({
+            type: 'who-host'
+        }).catch(() => {});
     }
-  };
+
+    publishRoster();
+    publishPing();
+
+    pingHeartbeat = setInterval(measurePing, 3000);
+    setTimeout(measurePing, 700);
+
+    metaHeartbeat = setInterval(() => {
+        if (roomMeta.hostId === userId) {
+            announceMeta();
+        }
+    }, 8000);
+
+    // Coalesce state updates instead of allowing a slow peer
+    // to create an ever-growing queue of outdated positions.
+    function sendLatestState(snapshot) {
+        if (left) return;
+
+        queuedState = snapshot;
+
+        if (stateInFlight) return;
+
+        stateInFlight = true;
+
+        const pump = () => {
+            if (left || !queuedState) {
+                stateInFlight = false;
+                return;
+            }
+
+            const next = queuedState;
+            queuedState = null;
+
+            stateAction.send(next)
+                .catch(() => {})
+                .finally(() => {
+                    if (queuedState && !left) {
+                        pump();
+                    } else {
+                        stateInFlight = false;
+                    }
+                });
+        };
+
+        pump();
+    }
+
+    return {
+        userId,
+
+        get hostId() {
+            return roomMeta.hostId;
+        },
+
+        get isHost() {
+            return roomMeta.hostId === userId;
+        },
+
+        getRoster,
+
+        getMeta: () => ({ ...roomMeta }),
+
+        getPeerCount: () => getUserIds().length,
+
+        getPing: () => {
+            const values = [...peerPings.values()].filter(Number.isFinite);
+
+            return values.length
+                ? values.reduce((a, b) => a + b, 0) / values.length
+                : null;
+        },
+
+        sendState(snapshot) {
+            sendLatestState(snapshot);
+        },
+
+        sendEvent(event) {
+            if (!left) {
+                eventAction.send(event).catch(() => {});
+            }
+        },
+
+        setMap(mapId) {
+            if (roomMeta.hostId !== userId) return false;
+
+            roomMeta = {
+                ...roomMeta,
+                mapId
+            };
+
+            announceMeta();
+
+            eventAction.send({
+                type: 'map',
+                mapId
+            }).catch(() => {});
+
+            return true;
+        },
+
+        resetRound() {
+            if (roomMeta.hostId !== userId) return false;
+
+            eventAction.send({
+                type: 'reset'
+            }).catch(() => {});
+
+            return true;
+        },
+
+        updateProfile(nextProfile) {
+            profile = {
+                name: nextProfile.name,
+                color: nextProfile.color
+            };
+
+            presence.set(profile);
+            publishRoster();
+        },
+
+        async leave() {
+            if (left) return;
+
+            left = true;
+
+            if (metaHeartbeat) clearInterval(metaHeartbeat);
+            if (pingHeartbeat) clearInterval(pingHeartbeat);
+
+            peerPings.clear();
+            queuedState = null;
+
+            await room.leave();
+        }
+    };
 }
