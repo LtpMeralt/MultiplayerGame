@@ -360,6 +360,53 @@ function handleRoomMeta(meta) {
   }
 }
 
+// loop through all other players and resolve overlaps + bounce
+const allPlayers = network?.getRoster?.() ?? {};
+for (const [id, pData] of Object.entries(allPlayers)) {
+  if (id === localUserId) continue;
+  const remoteBall = remotePlayerPositions[id];
+  if (!remoteBall) continue;
+
+  const dx = remoteBall.x - localBall.x;
+  const dy = remoteBall.y - localBall.y;
+  const dist = Math.hypot(dx, dy);
+  const minDist = localBall.radius + remoteBall.radius;
+
+  if (dist < minDist && dist > 0) {
+    const overlap = minDist - dist;
+    const nx = dx / dist;
+    const ny = dy / dist;
+
+    // Separate them so they don't stick
+    localBall.x -= nx * overlap * 0.5;
+    localBall.y -= ny * overlap * 0.5;
+
+    // Simple elastic velocity swap/bounce response
+    const kx = localBall.vx - remoteBall.vx;
+    const ky = localBall.vy - remoteBall.vy;
+    const p = 2 * (nx * kx + ny * ky) / 2;
+
+    localBall.vx -= p * nx * 0.8;
+    localBall.vy -= p * ny * 0.8;
+  }
+}
+
+function handleRoomEvent(event, senderId) {
+  if (event.type === 'reset' && senderId === lastHostId) {
+    localPlayer?.reset(currentMap.spawn);
+    isAiming = false;
+    ui.canvasHint.classList.remove('dismissed');
+    showToast('Host reset the round');
+  }
+  if (event.type === 'map' && senderId === lastHostId && typeof event.mapId === 'string') {
+    currentMap = normalizeMap(getMap(event.mapId));
+    localPlayer?.reset(currentMap.spawn);
+    updateMapUI();
+    resizeCanvas();
+    showToast(`Map changed to ${currentMap.name}`);
+  }
+}
+
 function applyHostUI() {
   ui.hostBadge.textContent = roomIsHost ? 'HOST' : 'PLAYER';
   ui.hostBadge.classList.toggle('host-badge', roomIsHost);
@@ -487,52 +534,6 @@ function onKeyDown(event) {
     localPlayer.body.vx += 235;
   } else if (key === 'r') {
     hostResetRound();
-  }
-}
-
-// loop through all other players and resolve overlaps + bounce
-const allPlayers = getRoster();
-for (const [id, pData] of Object.entries(allPlayers)) {
-    if (id === localUserId) continue;
-
-    const remoteBall = remotePlayerPositions[id];
-    if (!remoteBall) continue;
-
-    const dx = remoteBall.x - localBall.x;
-    const dy = remoteBall.y - localBall.y;
-    const dist = Math.hypot(dx, dy);
-    const minDist = localBall.radius + remoteBall.radius;
-
-    if (dist < minDist && dist > 0) {
-        const overlap = minDist - dist;
-        const nx = dx / dist;
-        const ny = dy / dist;
-
-        localBall.x -= nx * overlap * 0.5;
-        localBall.y -= ny * overlap * 0.5;
-
-        const kx = localBall.vx - remoteBall.vx;
-        const ky = localBall.vy - remoteBall.vy;
-        const p = 2 * (nx * kx + ny * ky) / 2;
-
-        localBall.vx -= p * nx * 0.8;
-        localBall.vy -= p * ny * 0.8;
-    }
-}
-
-function handleRoomEvent(event, senderId) {
-  if (event.type === 'reset' && senderId === lastHostId) {
-    localPlayer?.reset(currentMap.spawn);
-    isAiming = false;
-    ui.canvasHint.classList.remove('dismissed');
-    showToast('Host reset the round');
-  }
-  if (event.type === 'map' && senderId === lastHostId && typeof event.mapId === 'string') {
-    currentMap = normalizeMap(getMap(event.mapId));
-    localPlayer?.reset(currentMap.spawn);
-    updateMapUI();
-    resizeCanvas();
-    showToast(`Map changed to ${currentMap.name}`);
   }
 }
 
