@@ -20,7 +20,7 @@ const firebaseConfig = {
 
 export const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
-export const rtdb = getDatabase(app, 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app');
+export const rtdb = getDatabase(app);
 
 export async function initProfileStore() {
   try {
