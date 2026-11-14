@@ -5,7 +5,7 @@ import {
   getFirestore, doc, getDoc, setDoc, serverTimestamp, deleteDoc,
   collection, onSnapshot, Timestamp
 } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-firestore.js';
-import { getDatabase } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-database.js';
+export const rtdb = getDatabase(app, 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app');
 
 const firebaseConfig = {
   apiKey: 'AIzaSyC2fDuaCFka3q-3MuGoMWCxQnwzXSiaUig',
