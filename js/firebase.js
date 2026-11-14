@@ -55,7 +55,7 @@ export async function initProfileStore() {
           players: Math.max(1, Math.min(32, Number(room.players) || 1)),
           hasPassword: Boolean(room.hasPassword),
           updatedAt: serverTimestamp(),
-          expiresAt: Timestamp.fromMillis(Date.now() + 15000) // 15s expiry window
+          expiresAt: Timestamp.fromMillis(Date.now() + 90000) // 15s expiry window
         });
       },
       async touchRoom(code, playerCount) {
@@ -64,7 +64,7 @@ export async function initProfileStore() {
           await setDoc(doc(db, 'publicRooms', cleanCode), {
             players: Math.max(1, Math.min(32, Number(playerCount) || 1)),
             updatedAt: serverTimestamp(),
-            expiresAt: Timestamp.fromMillis(Date.now() + 15000)
+            expiresAt: Timestamp.fromMillis(Date.now() + 90000)
           }, { merge: true });
         } catch (err) {
           // ignore silent network blips on heartbeat
