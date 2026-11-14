@@ -1,105 +1,146 @@
-// Firebase stores player profiles and the small public-room directory.
-import { initializeApp } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-app.js';
-import { getAuth, onAuthStateChanged, signInAnonymously } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-auth.js';
-import {
-  getFirestore, doc, getDoc, setDoc, serverTimestamp, deleteDoc,
-  collection, onSnapshot, Timestamp
-} from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-firestore.js';
-import { getDatabase } from 'https://www.gstatic.com/firebasejs/13.3.0/firebase-database.js';
+import { joinRoom } from 'https://esm.run/trystero';
 
-const firebaseConfig = {
-  apiKey: 'AIzaSyC2fDuaCFka3q-3MuGoMWCxQnwzXSiaUig',
-  authDomain: 'multiplayergame-70906.firebaseapp.com',
-  projectId: 'multiplayergame-70906',
-  storageBucket: 'multiplayergame-70906.firebasestorage.app',
-  messagingSenderId: '449303847814',
-  appId: '1:449303847814:web:a5e5915e47aad5e4110207',
-  measurementId: 'G-ET0ZR25PQE',
-  databaseURL: 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app'
-};
+const APP_ID = 'ltpmer-multiplayer-game-v1';
 
-let app = null;
-let db = null;
-let rtdb = null;
+export async function connectRoom({ code, password = '', profile, create = false, callbacks = {} }) {
+  const roomId = `multiplayer-game-${String(code).toLowerCase()}`;
+  const config = { appId: APP_ID };
+  if (password) config.password = password;
 
-try {
-  app = initializeApp(firebaseConfig);
-  db = getFirestore(app);
-  rtdb = getDatabase(app);
-} catch (error) {
-  console.warn('Firebase init error:', error);
-}
-
-export { app as firebaseApp, rtdb };
-
-export async function initProfileStore() {
-  try {
-    const auth = getAuth(app);
-    let user = await waitForAuthState(auth);
-    if (!user) user = (await signInAnonymously(auth)).user;
-
-    return {
-      ready: true,
-      uid: user.uid,
-      async loadProfile() {
-        try {
-          const snapshot = await getDoc(doc(db, 'users', user.uid));
-          return snapshot.exists() ? snapshot.data() : null;
-        } catch (error) {
-          console.warn('Could not load the Firebase profile:', error);
-          return null;
-        }
-      },
-      async saveProfile(profile) {
-        await setDoc(doc(db, 'users', user.uid), {
-          ...sanitizeProfile(profile), updatedAt: serverTimestamp()
-        }, { merge: true });
-      },
-      async publishRoom(room) {
-        const code = String(room.code).toUpperCase();
-        await setDoc(doc(db, 'publicRooms', code), {
-          code,
-          name: String(room.name || 'Room').slice(0, 28),
-          hostName: String(room.hostName || 'Player').slice(0, 18),
-          ownerId: user.uid,
-          players: Math.max(1, Math.min(32, Number(room.players) || 1)),
-          hasPassword: Boolean(room.hasPassword),
-          updatedAt: serverTimestamp(),
-          expiresAt: Timestamp.fromMillis(Date.now() + 90000)
-        });
-      },
-      async removeRoom(code) {
-        await deleteDoc(doc(db, 'publicRooms', String(code).toUpperCase()));
-      },
-      watchPublicRooms(onRooms, onError = console.warn) {
-        return onSnapshot(collection(db, 'publicRooms'), snapshot => {
-          const now = Date.now();
-          const rooms = snapshot.docs.map(item => ({ id: item.id, ...item.data() }))
-            .filter(room => room.expiresAt?.toMillis?.() > now)
-            .sort((a, b) => (b.players || 0) - (a.players || 0));
-          onRooms(rooms);
-        }, onError);
-      }
-    };
-  } catch (error) {
-    console.warn('Firebase unavailable; local profile saving remains enabled.', error);
-    return { ready: false, uid: null, loadProfile: async () => null, saveProfile: async () => { throw error; } };
-  }
-}
-
-function waitForAuthState(auth) {
-  return new Promise(resolve => {
-    let unsubscribe = () => {};
-    unsubscribe = onAuthStateChanged(auth, user => {
-      unsubscribe(); resolve(user);
-    }, error => {
-      unsubscribe(); console.warn('Firebase auth state error:', error); resolve(null);
-    });
+  const room = joinRoom(config, roomId);
+  
+  room.onError(error => {
+    const message = error?.code === 'decrypt-failed'
+      ? 'Wrong room password.'
+      : error?.code === 'peer-connect-failed'
+        ? 'Could not connect to a player. Their network may block peer connections.'
+        : error?.message || error?.code || 'Unknown room error';
+    callbacks.onStatus?.(message);
+    callbacks.onError?.(error);
   });
-}
 
-function sanitizeProfile(profile) {
-  const name = String(profile.name || 'Player').trim().slice(0, 18) || 'Player';
-  const color = /^#[0-9a-f]{6}$/i.test(profile.color) ? profile.color : '#72e4c5';
-  return { name, color };
+  const { userId } = await room.getSelf();
+  const presence = room.makeUserState('player-profile', {
+    name: profile.name,
+    color: profile.color
+  });
+  presence.set({ name: profile.name, color: profile.color });
+
+  const stateAction = room.makeAction('orb-state');
+  const eventAction = room.makeAction('orb-event');
+  const metaAction = room.makeAction('orb-meta');
+
+  let roomMeta = {
+    hostId: create ? userId : null,
+    mapId: 'default'
+  };
+  let left = false;
+
+  const getRoster = () => {
+    const roster = presence.getAll() || {};
+    return { ...roster, [userId]: { name: profile.name, color: profile.color } };
+  };
+  const publishRoster = () => callbacks.onRoster?.(getRoster());
+  const publishMeta = () => callbacks.onMeta?.({ ...roomMeta, isHost: roomMeta.hostId === userId });
+
+  presence.onChange(publishRoster);
+  stateAction.onMessage((data, context) => {
+    if (!data || context.userId === userId) return;
+    callbacks.onPlayerState?.(context.userId, data);
+  });
+  eventAction.onMessage((data, context) => {
+    if (!data || context.userId === userId) return;
+    callbacks.onEvent?.(data, context.userId);
+  });
+
+  function acceptMeta(data, fromId) {
+    if (!data || typeof data.hostId !== 'string') return;
+    const currentHostLeft = roomMeta.hostId && !room.getUsers()[roomMeta.hostId];
+    const isCurrentHost = fromId === roomMeta.hostId;
+    const isSelfPromoting = data.hostId === fromId && currentHostLeft;
+    const firstHostClaim = !roomMeta.hostId && data.hostId === fromId;
+    if (!isCurrentHost && !isSelfPromoting && !firstHostClaim) return;
+    roomMeta = {
+      hostId: data.hostId,
+      mapId: typeof data.mapId === 'string' ? data.mapId : roomMeta.mapId
+    };
+    publishMeta();
+  }
+
+  metaAction.onMessage((data, context) => {
+    if (data?.type === 'who-host') {
+      if (roomMeta.hostId === userId) {
+        metaAction.send({ type: 'meta', hostId: roomMeta.hostId, mapId: roomMeta.mapId }, { target: context.userId }).catch(() => {});
+      }
+      return;
+    }
+    if (data?.type === 'meta') acceptMeta(data, context.userId);
+  });
+
+  const announceMeta = () => {
+    if (left || roomMeta.hostId !== userId) return;
+    metaAction.send({ type: 'meta', hostId: roomMeta.hostId, mapId: roomMeta.mapId }).catch(() => {});
+    publishMeta();
+  };
+
+  room.onUserJoin(() => {
+    publishRoster();
+    if (roomMeta.hostId === userId) announceMeta();
+  });
+
+  room.onUserLeave(({ userId: leavingId }) => {
+    publishRoster();
+    callbacks.onUserLeave?.(leavingId);
+    if (roomMeta.hostId === leavingId) {
+      const candidates = [userId, ...room.getPeers()].sort();
+      if (candidates[0] === userId) {
+        roomMeta = { ...roomMeta, hostId: userId };
+        announceMeta();
+      }
+    }
+  });
+
+  if (create) announceMeta();
+  else metaAction.send({ type: 'who-host' }).catch(() => {});
+
+  const heartbeat = setInterval(() => {
+    if (roomMeta.hostId === userId) announceMeta();
+    publishRoster();
+  }, 2500);
+
+  return {
+    userId,
+    get hostId() { return roomMeta.hostId; },
+    get isHost() { return roomMeta.hostId === userId; },
+    getRoster,
+    getMeta: () => ({ ...roomMeta }),
+    sendState(snapshot) {
+      if (!left) stateAction.send(snapshot).catch(() => {});
+    },
+    sendEvent(event) {
+      if (!left) eventAction.send(event).catch(() => {});
+    },
+    setMap(mapId) {
+      if (roomMeta.hostId !== userId) return false;
+      roomMeta = { ...roomMeta, mapId };
+      announceMeta();
+      eventAction.send({ type: 'map', mapId }).catch(() => {});
+      return true;
+    },
+    resetRound() {
+      if (roomMeta.hostId !== userId) return false;
+      eventAction.send({ type: 'reset' }).catch(() => {});
+      return true;
+    },
+    updateProfile(nextProfile) {
+      presence.set({ name: nextProfile.name, color: nextProfile.color });
+      publishRoster();
+    },
+    async leave() {
+      if (left) return;
+      left = true;
+      clearInterval(heartbeat);
+      await room.leave();
+    }
+  };
 }
