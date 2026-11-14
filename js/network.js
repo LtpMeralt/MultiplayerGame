@@ -1,4 +1,4 @@
-import { joinRoom } from 'https://esm.run/trystero?v=2';
+import { joinRoom } from 'https://esm.run/trystero/mqtt?v=2';
 
 const APP_ID = 'ltpmer-multiplayer-game-v1';
 
