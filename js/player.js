@@ -1,4 +1,9 @@
-import { createBody } from './physics.js';
+import { createBody, stepBody } from './physics.js';
+
+const WALK_SPEED = 390;
+const GROUND_ACCELERATION = 2200;
+const AIR_ACCELERATION = 900;
+const MAX_LAUNCH_SPEED = 1850;
 
 export class LocalPlayer {
   constructor(userId, profile, spawn) {
@@ -14,9 +19,32 @@ export class LocalPlayer {
     this.color = profile.color;
   }
 
+  move(direction, dt) {
+    if (!direction) return;
+
+    const acceleration = this.body.onGround ? GROUND_ACCELERATION : AIR_ACCELERATION;
+    const velocityInInputDirection = direction * this.body.vx;
+
+    // Accelerate towards a comfortable walking speed, but preserve launch momentum.
+    if (velocityInInputDirection < WALK_SPEED) {
+      this.body.vx += direction * acceleration * dt;
+      this.body.vx = Math.max(-MAX_LAUNCH_SPEED, Math.min(MAX_LAUNCH_SPEED, this.body.vx));
+    }
+  }
+
+  jump() {
+    // W/Up is a normal jump, not another launch. It only works while grounded.
+    if (!this.body.onGround) return false;
+
+    this.body.vy = -760;
+    this.body.onGround = false;
+    return true;
+  }
+
   launch(vx, vy) {
-    this.body.vx = Math.max(-1850, Math.min(1850, vx));
-    this.body.vy = Math.max(-1850, Math.min(1850, vy));
+    // Dragging and releasing is intentionally allowed both on the ground and mid-air.
+    this.body.vx = Math.max(-MAX_LAUNCH_SPEED, Math.min(MAX_LAUNCH_SPEED, vx));
+    this.body.vy = Math.max(-MAX_LAUNCH_SPEED, Math.min(MAX_LAUNCH_SPEED, vy));
     this.body.onGround = false;
   }
 
@@ -41,7 +69,9 @@ export class RemotePlayer {
     this.userId = userId;
     this.name = profile.name || 'Player';
     this.color = profile.color || '#91a0b2';
-    this.snapshots = [];
+    this.body = null;
+    this.correctionX = 0;
+    this.correctionY = 0;
     this.isLocal = false;
   }
 
@@ -50,47 +80,55 @@ export class RemotePlayer {
     if (typeof profile.color === 'string') this.color = profile.color;
   }
 
-  pushSnapshot(snapshot, receivedAt = performance.now()) {
-    if (![snapshot.x, snapshot.y, snapshot.vx, snapshot.vy].every(Number.isFinite)) return;
-    this.snapshots.push({
-      x: snapshot.x,
-      y: snapshot.y,
-      vx: snapshot.vx,
-      vy: snapshot.vy,
-      receivedAt
-    });
-    if (this.snapshots.length > 3) this.snapshots.shift();
-  }
+  pushSnapshot(snapshot) {
+    if (!snapshot || ![snapshot.x, snapshot.y, snapshot.vx, snapshot.vy].every(Number.isFinite)) return;
 
-  getVisualState(now = performance.now()) {
-    if (this.snapshots.length === 0) return null;
-    const bufferMs = 65;
-    const renderTime = now - bufferMs;
-    const first = this.snapshots[0];
-    const last = this.snapshots[this.snapshots.length - 1];
-
-    if (this.snapshots.length >= 2) {
-      for (let i = 1; i < this.snapshots.length; i += 1) {
-        const before = this.snapshots[i - 1];
-        const after = this.snapshots[i];
-        if (renderTime <= after.receivedAt) {
-          const span = Math.max(1, after.receivedAt - before.receivedAt);
-          const alpha = Math.max(0, Math.min(1, (renderTime - before.receivedAt) / span));
-          return {
-            x: lerp(before.x, after.x, alpha),
-            y: lerp(before.y, after.y, alpha),
-            radius: 18
-          };
-        }
-      }
+    if (!this.body) {
+      this.body = createBody(snapshot.x, snapshot.y, Number.isFinite(snapshot.radius) ? snapshot.radius : 18);
+      this.body.vx = snapshot.vx;
+      this.body.vy = snapshot.vy;
+      this.body.onGround = Boolean(snapshot.onGround);
+      return;
     }
 
-    const ahead = Math.max(0, Math.min(0.12, (now - last.receivedAt) / 1000));
-    return {
-      x: last.x + last.vx * ahead,
-      y: last.y + last.vy * ahead + 0.5 * 1450 * ahead * ahead,
-      radius: 18
-    };
+    const dx = snapshot.x - this.body.x;
+    const dy = snapshot.y - this.body.y;
+    const error = Math.hypot(dx, dy);
+
+    // Correct small prediction errors gradually. Only large errors cause a hard snap.
+    if (error > 150) {
+      this.body.x = snapshot.x;
+      this.body.y = snapshot.y;
+      this.correctionX = 0;
+      this.correctionY = 0;
+    } else {
+      this.correctionX += dx * 0.42;
+      this.correctionY += dy * 0.42;
+    }
+
+    this.body.vx += (snapshot.vx - this.body.vx) * 0.38;
+    this.body.vy += (snapshot.vy - this.body.vy) * 0.38;
+    this.body.radius = Number.isFinite(snapshot.radius) ? snapshot.radius : 18;
+  }
+
+  simulate(dt, map) {
+    if (!this.body) return;
+
+    // Each client runs the same fixed-step physics locally between network snapshots.
+    stepBody(this.body, map, dt);
+
+    const blend = 1 - Math.exp(-17 * dt);
+    const correctionX = this.correctionX * blend;
+    const correctionY = this.correctionY * blend;
+
+    this.body.x += correctionX;
+    this.body.y += correctionY;
+    this.correctionX -= correctionX;
+    this.correctionY -= correctionY;
+  }
+
+  getVisualState() {
+    return this.body;
   }
 }
 
@@ -178,8 +216,4 @@ function shadeColor(hex, amount) {
 function roundedRect(ctx, x, y, width, height, radius) {
   ctx.beginPath();
   ctx.roundRect(x, y, width, height, radius);
-}
-
-function lerp(a, b, t) {
-  return a + (b - a) * t;
 }
