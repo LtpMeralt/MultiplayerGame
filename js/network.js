@@ -1,22 +1,19 @@
 
-import { joinRoom } from 'https://esm.run/@trystero-p2p/firebase@0.27.0';
+import { joinRoom } from 'https://esm.run/trystero@0.27.0';
 
 // ============================================================
 // CONFIGURATION
 // ============================================================
 
-const FIREBASE_DATABASE_URL =
-    'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app';
-
-const APP_ID = FIREBASE_DATABASE_URL;
-const FIREBASE_PATH = '__trystero__';
+const APP_ID = 'ltpmer-multiplayer-game-v1';
 
 const MAX_PLAYERS = 32;
-const PING_INTERVAL = 2500;
-const PING_TIMEOUT = 2000;
+
+const PING_INTERVAL = 5000;
+const PING_TIMEOUT = 2500;
 
 // ============================================================
-// ROOM CONNECTION
+// CONNECT ROOM
 // ============================================================
 
 export async function connectRoom({
@@ -28,19 +25,21 @@ export async function connectRoom({
 }) {
     const cleanCode = String(code)
         .trim()
-        .toLowerCase();
+        .toUpperCase();
 
     if (!cleanCode) {
         throw new Error('Room code is empty.');
     }
 
-    const roomId = `multiplayer-game-${cleanCode}`;
+    const roomId = `multiplayer-game-${cleanCode.toLowerCase()}`;
 
     const config = {
         appId: APP_ID,
         maxUsers: MAX_PLAYERS,
+
         relayConfig: {
-            firebasePath: FIREBASE_PATH
+            redundancy: 5,
+            warnOnRelayFailure: false
         }
     };
 
@@ -48,8 +47,6 @@ export async function connectRoom({
         config.password = password;
     }
 
-    // Firebase strategy: database URL is the appId.
-    // Do not pass firebaseApp here.
     const room = joinRoom(config, roomId);
 
     let left = false;
@@ -57,9 +54,11 @@ export async function connectRoom({
     let pingHeartbeat = null;
     let metaHeartbeat = null;
     let hostDiscoveryHeartbeat = null;
+    let hostMonitor = null;
 
     let pingInFlight = false;
-    let stateInFlight = false;
+
+    let stateSending = false;
     let queuedState = null;
 
     let roomMeta = {
@@ -89,6 +88,8 @@ export async function connectRoom({
     // ========================================================
 
     room.onError(error => {
+        if (left) return;
+
         const code = error?.code;
 
         let message =
@@ -103,11 +104,11 @@ export async function connectRoom({
         if (code === 'peer-connect-failed') {
             message = error.turnConfigured
                 ? 'Peer connection failed. Check your network.'
-                : 'WebRTC connection failed. This network may require TURN.';
+                : 'Direct connection failed. This network may require TURN.';
         }
 
         if (code === 'relay-failed') {
-            message = 'Firebase signaling failed. Check Realtime Database rules.';
+            message = 'All signaling relays failed. Check your internet connection.';
         }
 
         if (code === 'room-full') {
@@ -123,13 +124,13 @@ export async function connectRoom({
     });
 
     // ========================================================
-    // INITIALIZE IDENTITY
+    // IDENTITY
     // ========================================================
 
-    let self;
+    let identity;
 
     try {
-        self = await room.getSelf();
+        identity = await room.getSelf();
     } catch (error) {
         try {
             await room.leave();
@@ -138,7 +139,7 @@ export async function connectRoom({
         throw error;
     }
 
-    const { userId } = self;
+    const { userId } = identity;
 
     // ========================================================
     // PLAYER PRESENCE
@@ -146,39 +147,18 @@ export async function connectRoom({
 
     const presence = room.makeUserState(
         'player-profile',
-        {
-            name: profile.name,
-            color: profile.color
-        }
+        profile
     );
 
-    presence.set(profile).catch(error => {
-        console.warn('Could not publish player profile:', error);
-    });
-
-    // ========================================================
-    // NETWORK ACTIONS
-    // ========================================================
-
-    const stateAction = room.makeAction('orb-state');
-    const eventAction = room.makeAction('orb-event');
-    const metaAction = room.makeAction('orb-meta');
-
-    // ========================================================
-    // PLAYER DISCOVERY
-    // ========================================================
+    presence.set(profile);
 
     function getUsers() {
         return room.getUsers() || {};
     }
 
-    function getUserIds() {
-        return Object.keys(getUsers());
-    }
-
     function getRoster() {
         return {
-            ...(presence.getAll() || {}),
+            ...presence.getAll(),
             [userId]: {
                 name: profile.name,
                 color: profile.color
@@ -199,7 +179,15 @@ export async function connectRoom({
     });
 
     // ========================================================
-    // PING DISPLAY
+    // ACTIONS
+    // ========================================================
+
+    const stateAction = room.makeAction('orb-state');
+    const eventAction = room.makeAction('orb-event');
+    const metaAction = room.makeAction('orb-meta');
+
+    // ========================================================
+    // PING
     // ========================================================
 
     function publishPing() {
@@ -207,9 +195,8 @@ export async function connectRoom({
 
         const now = performance.now();
 
-        // Ignore old measurements.
         const values = [...peerPings.values()]
-            .filter(item => now - item.updatedAt < 8000)
+            .filter(item => now - item.updatedAt < 12000)
             .map(item => item.rtt)
             .filter(Number.isFinite);
 
@@ -224,9 +211,10 @@ export async function connectRoom({
             return;
         }
 
-        const average =
-            values.reduce((sum, value) => sum + value, 0) /
-            values.length;
+        const average = values.reduce(
+            (sum, value) => sum + value,
+            0
+        ) / values.length;
 
         callbacks.onPing?.({
             average,
@@ -269,22 +257,22 @@ export async function connectRoom({
         pingInFlight = true;
 
         try {
-            const users = getUserIds();
-            const activeUsers = new Set(users);
+            const users = getUsers();
+            const activeUsers = new Set(Object.keys(users));
 
-            for (const id of [...peerPings.keys()]) {
+            for (const id of peerPings.keys()) {
                 if (!activeUsers.has(id)) {
                     peerPings.delete(id);
                 }
             }
 
-            if (!users.length) {
+            if (!activeUsers.size) {
                 publishPing();
                 return;
             }
 
             const results = await Promise.all(
-                users.map(async targetId => ({
+                [...activeUsers].map(async targetId => ({
                     targetId,
                     rtt: await pingUser(targetId)
                 }))
@@ -292,10 +280,12 @@ export async function connectRoom({
 
             if (left) return;
 
-            const currentlyConnected = new Set(getUserIds());
+            const stillActive = new Set(
+                Object.keys(getUsers())
+            );
 
             for (const result of results) {
-                if (!currentlyConnected.has(result.targetId)) {
+                if (!stillActive.has(result.targetId)) {
                     peerPings.delete(result.targetId);
                     continue;
                 }
@@ -319,11 +309,15 @@ export async function connectRoom({
     // HOST MANAGEMENT
     // ========================================================
 
-    function getElectionCandidate() {
-        return [
+    function getElectionCandidate(excludedId = null) {
+        const candidates = [
             userId,
-            ...getUserIds()
-        ].sort()[0];
+            ...Object.keys(getUsers()).filter(
+                id => id !== excludedId
+            )
+        ];
+
+        return [...new Set(candidates)].sort()[0];
     }
 
     function publishMeta() {
@@ -336,7 +330,10 @@ export async function connectRoom({
     }
 
     function announceMeta() {
-        if (left || roomMeta.hostId !== userId) {
+        if (
+            left ||
+            roomMeta.hostId !== userId
+        ) {
             return;
         }
 
@@ -345,7 +342,7 @@ export async function connectRoom({
             hostId: userId,
             mapId: roomMeta.mapId
         }).catch(error => {
-            console.warn('Could not announce host metadata:', error);
+            console.warn('Host metadata send failed:', error);
         });
 
         publishMeta();
@@ -362,30 +359,30 @@ export async function connectRoom({
 
         const users = getUsers();
 
-        const currentHostIsConnected =
+        const hostIsPresent =
             roomMeta.hostId === userId ||
             Boolean(users[roomMeta.hostId]);
 
-        const currentHostLeft =
+        const hostHasLeft =
             Boolean(roomMeta.hostId) &&
-            !currentHostIsConnected;
+            !hostIsPresent;
 
         const isCurrentHost =
             fromId === roomMeta.hostId;
 
-        const isSelfPromoting =
-            currentHostLeft &&
-            data.hostId === fromId &&
-            fromId === getElectionCandidate();
+        const isValidMigration =
+            hostHasLeft &&
+            fromId === getElectionCandidate(roomMeta.hostId);
 
-        const firstHostClaim =
+        const isFirstHost =
             !roomMeta.hostId &&
+            fromId === getElectionCandidate() &&
             data.hostId === fromId;
 
         if (
             !isCurrentHost &&
-            !isSelfPromoting &&
-            !firstHostClaim
+            !isValidMigration &&
+            !isFirstHost
         ) {
             return;
         }
@@ -409,8 +406,27 @@ export async function connectRoom({
         }).catch(() => {});
     }
 
+    function electHost(excludedId = null) {
+        if (left) return;
+
+        const candidate = getElectionCandidate(excludedId);
+
+        if (candidate !== userId) return;
+
+        roomMeta = {
+            ...roomMeta,
+            hostId: userId
+        };
+
+        announceMeta();
+    }
+
     metaAction.onMessage((data, context) => {
-        if (!data || context.userId === userId) {
+        if (
+            left ||
+            !data ||
+            context.userId === userId
+        ) {
             return;
         }
 
@@ -434,7 +450,7 @@ export async function connectRoom({
     });
 
     // ========================================================
-    // RECEIVE PLAYER STATES
+    // PLAYER STATE
     // ========================================================
 
     stateAction.onMessage((data, context) => {
@@ -464,7 +480,7 @@ export async function connectRoom({
     });
 
     // ========================================================
-    // RECEIVE GAME EVENTS
+    // GAME EVENTS
     // ========================================================
 
     eventAction.onMessage((data, context) => {
@@ -489,9 +505,9 @@ export async function connectRoom({
     room.onUserJoin(({ userId: joinedUserId }) => {
         if (left) return;
 
-        callbacks.onUserJoin?.(joinedUserId);
-
         publishRoster();
+
+        callbacks.onUserJoin?.(joinedUserId);
 
         if (roomMeta.hostId === userId) {
             announceMeta();
@@ -522,25 +538,13 @@ export async function connectRoom({
         publishPing();
 
         if (roomMeta.hostId === leavingUserId) {
-            const candidate = getElectionCandidate();
-
-            if (candidate === userId) {
-                roomMeta = {
-                    ...roomMeta,
-                    hostId: userId
-                };
-
-                announceMeta();
-            }
+            electHost(leavingUserId);
         }
 
-        if (!roomMeta.hostId) {
-            requestHost();
-        }
     });
 
     // ========================================================
-    // PEER CONNECTION EVENTS
+    // PEER CONNECTION
     // ========================================================
 
     room.onPeerJoin(({
@@ -557,7 +561,7 @@ export async function connectRoom({
 
         setTimeout(() => {
             if (!left) measurePing();
-        }, 250);
+        }, 300);
 
     }, {
         replay: true
@@ -594,24 +598,38 @@ export async function connectRoom({
     publishRoster();
     publishPing();
 
-    // Retry host discovery until the host responds.
+    // Repeated host discovery for late signaling events.
     hostDiscoveryHeartbeat = setInterval(() => {
+        if (left) return;
+
         if (!roomMeta.hostId) {
             requestHost();
-        } else if (hostDiscoveryHeartbeat) {
+        } else {
             clearInterval(hostDiscoveryHeartbeat);
             hostDiscoveryHeartbeat = null;
         }
     }, 1500);
 
-    // Send host metadata periodically.
+    // Detect host disconnects that do not deliver a clean leave event.
+    hostMonitor = setInterval(() => {
+        if (left || !roomMeta.hostId) return;
+
+        if (
+            roomMeta.hostId !== userId &&
+            !getUsers()[roomMeta.hostId]
+        ) {
+            electHost(roomMeta.hostId);
+        }
+    }, 4000);
+
+    // Host metadata heartbeat.
     metaHeartbeat = setInterval(() => {
         if (roomMeta.hostId === userId) {
             announceMeta();
         }
     }, 8000);
 
-    // Peer-to-peer ping.
+    // Ping heartbeat.
     pingHeartbeat = setInterval(
         measurePing,
         PING_INTERVAL
@@ -619,28 +637,24 @@ export async function connectRoom({
 
     setTimeout(() => {
         if (!left) measurePing();
-    }, 500);
+    }, 700);
 
     // ========================================================
-    // NETWORK OBJECT
+    // STATE SENDING
     // ========================================================
 
-    function sendLatestState(snapshot) {
-        if (left) return;
+    async function flushStateQueue() {
+        if (left || stateSending) return;
 
-        queuedState = snapshot;
+        stateSending = true;
 
-        if (stateInFlight) return;
-
-        stateInFlight = true;
-
-        async function pump() {
-            while (!left && queuedState) {
-                const next = queuedState;
+        try {
+            while (!left && queuedState !== null) {
+                const snapshot = queuedState;
                 queuedState = null;
 
                 try {
-                    await stateAction.send(next);
+                    await stateAction.send(snapshot);
                 } catch (error) {
                     console.warn(
                         'Player state transmission failed:',
@@ -648,17 +662,26 @@ export async function connectRoom({
                     );
                 }
             }
+        } finally {
+            stateSending = false;
 
-            stateInFlight = false;
-
-            // Handle an update arriving as the pump finishes.
-            if (!left && queuedState) {
-                sendLatestState(queuedState);
+            if (!left && queuedState !== null) {
+                void flushStateQueue();
             }
         }
-
-        pump();
     }
+
+    function sendLatestState(snapshot) {
+        if (left) return;
+
+        queuedState = snapshot;
+
+        void flushStateQueue();
+    }
+
+    // ========================================================
+    // RETURN NETWORK API
+    // ========================================================
 
     return {
         userId,
@@ -678,15 +701,16 @@ export async function connectRoom({
         },
 
         getPeerCount() {
-            return getUserIds().length;
+            return Object.keys(getUsers()).length;
         },
 
         getPing() {
             const now = performance.now();
 
             const values = [...peerPings.values()]
-                .filter(item => now - item.updatedAt < 8000)
-                .map(item => item.rtt);
+                .filter(item => now - item.updatedAt < 12000)
+                .map(item => item.rtt)
+                .filter(Number.isFinite);
 
             if (!values.length) return null;
 
@@ -704,7 +728,10 @@ export async function connectRoom({
             if (left) return;
 
             eventAction.send(event).catch(error => {
-                console.warn('Game event transmission failed:', error);
+                console.warn(
+                    'Game event transmission failed:',
+                    error
+                );
             });
         },
 
@@ -728,7 +755,10 @@ export async function connectRoom({
                 type: 'map',
                 mapId
             }).catch(error => {
-                console.warn('Could not send map change:', error);
+                console.warn(
+                    'Map change transmission failed:',
+                    error
+                );
             });
 
             return true;
@@ -745,7 +775,10 @@ export async function connectRoom({
             eventAction.send({
                 type: 'reset'
             }).catch(error => {
-                console.warn('Could not send round reset:', error);
+                console.warn(
+                    'Round reset transmission failed:',
+                    error
+                );
             });
 
             return true;
@@ -757,17 +790,15 @@ export async function connectRoom({
             profile = {
                 name: String(nextProfile?.name || 'Player')
                     .trim()
-                    .slice(0, 18),
+                    .replace(/[<>\u0000-\u001f]/g, '')
+                    .slice(0, 18) || 'Player',
 
                 color: /^#[0-9a-f]{6}$/i.test(nextProfile?.color)
                     ? nextProfile.color
                     : '#72e4c5'
             };
 
-            presence.set(profile).catch(error => {
-                console.warn('Could not update profile:', error);
-            });
-
+            presence.set(profile);
             publishRoster();
         },
 
@@ -788,20 +819,35 @@ export async function connectRoom({
                 clearInterval(hostDiscoveryHeartbeat);
             }
 
+            if (hostMonitor) {
+                clearInterval(hostMonitor);
+            }
+
             pingHeartbeat = null;
             metaHeartbeat = null;
             hostDiscoveryHeartbeat = null;
+            hostMonitor = null;
 
             peerPings.clear();
             queuedState = null;
 
             try {
-                await presence.clear();
+                presence.clear();
             } catch (error) {
-                console.warn('Could not clear presence:', error);
+                console.warn(
+                    'Could not clear player presence:',
+                    error
+                );
             }
 
-            await room.leave();
+            try {
+                await room.leave();
+            } catch (error) {
+                console.warn(
+                    'Could not leave Trystero room:',
+                    error
+                );
+            }
         }
     };
 }
