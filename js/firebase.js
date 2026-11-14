@@ -14,7 +14,8 @@ const firebaseConfig = {
   storageBucket: 'multiplayergame-70906.firebasestorage.app',
   messagingSenderId: '449303847814',
   appId: '1:449303847814:web:a5e5915e47aad5e4110207',
-  measurementId: 'G-ET0ZR25PQE'
+  measurementId: 'G-ET0ZR25PQE',
+  databaseURL: 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app'
 };
 
 let app = null;
@@ -24,7 +25,7 @@ let rtdb = null;
 try {
   app = initializeApp(firebaseConfig);
   db = getFirestore(app);
-  rtdb = getDatabase(app, 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app');
+  rtdb = getDatabase(app);
 } catch (error) {
   console.warn('Firebase init error:', error);
 }
