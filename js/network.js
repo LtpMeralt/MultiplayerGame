@@ -5,7 +5,12 @@ const APP_ID = 'ltpmer-multiplayer-game-v1';
 
 export async function connectRoom({ code, password = '', profile, create = false, callbacks = {} }) {
   const roomId = `multiplayer-game-${String(code).toLowerCase()}`;
-  const config = { appId: APP_ID };
+  const config = {
+      appId: APP_ID,
+      relayConfig: {
+          warnOnRelayFailure: false
+      }
+  };
 
   if (password) config.password = password;
 
