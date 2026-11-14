@@ -20,8 +20,11 @@ export async function connectRoom({
 
     const config = {
         appId: APP_ID,
-        maxUsers: MAX_PLAYERS,
+    
+        reannounceOnDisconnect: false,
+    
         relayConfig: {
+            firebaseApp: app,
             firebasePath: FIREBASE_PATH
         }
     };
