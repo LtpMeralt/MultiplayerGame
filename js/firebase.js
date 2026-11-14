@@ -15,7 +15,7 @@ const firebaseConfig = {
   messagingSenderId: '449303847814',
   appId: '1:449303847814:web:a5e5915e47aad5e4110207',
   measurementId: 'G-ET0ZR25PQE',
-  databaseURL: 'https://multiplayergame-70906-default-rtdb.europe-west1.firebasedatabase.app'
+  databaseURL: 'https://console.firebase.google.com/u/0/project/multiplayergame-70906/database/multiplayergame-70906-default-rtdb'
 };
 
 let app = null;
