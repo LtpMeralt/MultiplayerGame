@@ -106,7 +106,7 @@
         <section class="game-panel panel">
           <div class="canvas-toolbar">
             <div class="canvas-label"><span class="live-dot"></span><span id="mapName">TEST COURSE</span><span class="toolbar-separator">/</span><span id="playerCount">1 PLAYER</span></div>
-            <div class="toolbar-right"><span class="hz-label"><b>60</b> FPS</span><span class="toolbar-separator">·</span><span id="physicsLabel">READY</span></div>
+            <div class="toolbar-right"><span class="hz-label"><b>60</b> FPS</span><span class="toolbar-separator">·</span><span id="pingLabel" class="hz-label">PING -- MS</span><span class="toolbar-separator">·</span><span id="physicsLabel">READY</span></div>
           </div>
           <div class="canvas-wrap" id="canvasWrap">
             <canvas id="gameCanvas" width="1200" height="680" aria-label="2D physics game. Drag your ball backwards and release to launch."></canvas>
@@ -120,7 +120,7 @@
 
         <aside class="side-column">
           <section class="panel players-panel">
-            <div class="side-heading"><div><span class="panel-kicker">ROOM / ROSTER</span><h3>Players <span id="rosterCount">01</span></h3></div><span class="players-symbol">◎</span></div>
+            <div class="side-heading"><div><span class="panel-kicker">ROOM</span><h3>Players <span id="rosterCount">01</span></h3></div><span class="players-symbol">◎</span></div>
             <div id="playerRoster" class="player-roster"></div>
           </section>
 
@@ -139,11 +139,11 @@
             <span class="panel-kicker">HOW TO PLAY</span>
             <div class="help-step"><span>01</span><p>Press and hold your ball.</p></div>
             <div class="help-step"><span>02</span><p>Pull back to aim. The dotted line previews the arc.</p></div>
-            <div class="help-step"><span>03</span><p>Release to launch. Try bouncing off the jump pad.</p></div>
+            <div class="help-step"><span>03</span><p>Release to launch.</p></div>
           </section>
         </aside>
       </div>
-      <footer class="game-footer"><span>MULTIPLAYER GAME</span><span>60 FPS · HAVE FUN</span></footer>
+      <footer class="game-footer"><span>MULTIPLAYER GAME</span><span>60 FPS</span></footer>
     </section>
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
