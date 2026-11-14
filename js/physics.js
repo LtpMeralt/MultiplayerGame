@@ -1,442 +1,395 @@
 
-import { createBody, stepBody } from './physics.js';
+import {
+    getSolidObjects,
+    isBodyInWater
+} from './objects.js';
 
-const WALK_SPEED = 390;
-const GROUND_ACCELERATION = 2200;
-const AIR_ACCELERATION = 900;
-const MAX_LAUNCH_SPEED = 1850;
-const MAX_REMOTE_CORRECTION = 220;
+// ============================================================
+// PHYSICS SETTINGS
+// ============================================================
 
-export class LocalPlayer {
-    constructor(userId, profile, spawn) {
-        this.userId = userId;
-        this.name = profile?.name || 'Player';
-        this.color = profile?.color || '#72e4c5';
+export const SIMULATION_HZ = 60;
+export const FIXED_DT = 1 / SIMULATION_HZ;
 
-        this.body = createBody(spawn.x, spawn.y, 18);
+export const PHYSICS = Object.freeze({
+    gravity: 1450,
+    waterGravityScale: 0.24,
 
-        this.isLocal = true;
-        this.sequence = 0;
-    }
+    airDrag: 0.10,
+    waterDrag: 1.75,
 
-    updateProfile(profile) {
-        this.name = profile?.name || this.name;
-        this.color = profile?.color || this.color;
-    }
+    groundFriction: 5.5,
 
-    move(direction, dt) {
-        if (!direction) return;
+    wallRestitution: 0.48,
+    bounceRestitution: 0.23,
 
-        const acceleration = this.body.onGround
-            ? GROUND_ACCELERATION
-            : AIR_ACCELERATION;
+    jumpPadVelocity: -1080,
 
-        const speed = this.body.vx * direction;
+    maxSpeed: 1850
+});
 
-        if (speed < WALK_SPEED) {
-            this.body.vx += direction * acceleration * dt;
+// ============================================================
+// BODY CREATION
+// ============================================================
 
-            this.body.vx = Math.max(
-                -MAX_LAUNCH_SPEED,
-                Math.min(MAX_LAUNCH_SPEED, this.body.vx)
-            );
-        }
-    }
+export function createBody(x, y, radius = 18) {
+    return {
+        x,
+        y,
 
-    jump() {
-        if (!this.body.onGround) return false;
+        vx: 0,
+        vy: 0,
 
-        this.body.vy = -760;
-        this.body.onGround = false;
+        radius,
 
-        return true;
-    }
+        onGround: false,
+        inWater: false
+    };
+}
 
-    launch(vx, vy) {
-        this.body.vx = Math.max(
-            -MAX_LAUNCH_SPEED,
-            Math.min(MAX_LAUNCH_SPEED, vx)
-        );
-
-        this.body.vy = Math.max(
-            -MAX_LAUNCH_SPEED,
-            Math.min(MAX_LAUNCH_SPEED, vy)
-        );
-
-        this.body.onGround = false;
-    }
-
-    reset(spawn) {
-        this.body = createBody(
-            spawn.x,
-            spawn.y,
-            this.body.radius
-        );
-    }
-
-    snapshot() {
-        this.sequence += 1;
-
-        return {
-            sequence: this.sequence,
-
-            x: this.body.x,
-            y: this.body.y,
-
-            vx: this.body.vx,
-            vy: this.body.vy,
-
-            radius: this.body.radius,
-
-            onGround: this.body.onGround,
-            inWater: this.body.inWater
-        };
-    }
+export function cloneBody(body) {
+    return { ...body };
 }
 
 // ============================================================
-// REMOTE PLAYER
+// PHYSICS SIMULATION
 // ============================================================
 
-export class RemotePlayer {
-    constructor(userId, profile = {}) {
-        this.userId = userId;
+export function stepBody(
+    body,
+    map,
+    dt = FIXED_DT
+) {
+    const radius = body.radius;
 
-        this.name = profile.name || 'Player';
-        this.color = profile.color || '#91a0b2';
+    const solids = getSolidObjects(map);
 
-        this.body = null;
+    body.onGround = false;
 
-        this.correctionX = 0;
-        this.correctionY = 0;
+    body.inWater = isBodyInWater(body, map);
 
-        this.correctionVX = 0;
-        this.correctionVY = 0;
+    // ========================================================
+    // GRAVITY
+    // ========================================================
 
-        this.lastSequence = -1;
-        this.lastSnapshotAt = 0;
+    const gravityScale = body.inWater
+        ? PHYSICS.waterGravityScale
+        : 1;
 
-        this.isLocal = false;
+    body.vy +=
+        PHYSICS.gravity *
+        gravityScale *
+        dt;
+
+    // ========================================================
+    // DRAG
+    // ========================================================
+
+    const drag = body.inWater
+        ? PHYSICS.waterDrag
+        : PHYSICS.airDrag;
+
+    const dragFactor = Math.exp(-drag * dt);
+
+    body.vx *= dragFactor;
+
+    if (body.inWater) {
+        body.vy *= dragFactor;
     }
 
-    updateProfile(profile = {}) {
-        if (typeof profile.name === 'string') {
-            this.name = profile.name;
+    // ========================================================
+    // SPEED LIMIT
+    // ========================================================
+
+    body.vx = clamp(
+        body.vx,
+        -PHYSICS.maxSpeed,
+        PHYSICS.maxSpeed
+    );
+
+    body.vy = clamp(
+        body.vy,
+        -PHYSICS.maxSpeed,
+        PHYSICS.maxSpeed
+    );
+
+    // ========================================================
+    // HORIZONTAL COLLISIONS
+    // ========================================================
+
+    const oldX = body.x;
+
+    body.x += body.vx * dt;
+
+    for (const object of solids) {
+        if (!verticalOverlap(body.y, radius, object)) {
+            continue;
         }
+
+        const left = object.x;
+        const right = object.x + object.w;
 
         if (
-            typeof profile.color === 'string' &&
-            /^#[0-9a-f]{6}$/i.test(profile.color)
+            body.vx > 0 &&
+            oldX + radius <= left + 1 &&
+            body.x + radius >= left
         ) {
-            this.color = profile.color;
-        }
-    }
+            body.x = left - radius;
 
-    pushSnapshot(snapshot, receivedAt = performance.now()) {
-        if (
-            !snapshot ||
-            ![
-                snapshot.x,
-                snapshot.y,
-                snapshot.vx,
-                snapshot.vy
-            ].every(Number.isFinite)
+            body.vx =
+                -Math.abs(body.vx) *
+                PHYSICS.wallRestitution;
+
+        } else if (
+            body.vx < 0 &&
+            oldX - radius >= right - 1 &&
+            body.x - radius <= right
         ) {
-            return;
-        }
+            body.x = right + radius;
 
-        if (Number.isFinite(snapshot.sequence)) {
-            if (snapshot.sequence <= this.lastSequence) {
-                return;
+            body.vx =
+                Math.abs(body.vx) *
+                PHYSICS.wallRestitution;
+
+        } else if (
+            overlaps(
+                body.x,
+                body.y,
+                radius,
+                object
+            )
+        ) {
+            const pushLeft =
+                body.x - (left - radius);
+
+            const pushRight =
+                (right + radius) - body.x;
+
+            if (pushLeft < pushRight) {
+                body.x = left - radius;
+            } else {
+                body.x = right + radius;
             }
 
-            this.lastSequence = snapshot.sequence;
+            body.vx *=
+                -PHYSICS.wallRestitution;
         }
-
-        // First snapshot initializes the predicted body.
-        if (!this.body) {
-            this.body = createBody(
-                snapshot.x,
-                snapshot.y,
-                Number.isFinite(snapshot.radius)
-                    ? snapshot.radius
-                    : 18
-            );
-
-            this.body.vx = snapshot.vx;
-            this.body.vy = snapshot.vy;
-
-            this.body.onGround = Boolean(snapshot.onGround);
-            this.body.inWater = Boolean(snapshot.inWater);
-
-            this.lastSnapshotAt = receivedAt;
-
-            return;
-        }
-
-        const dx = snapshot.x - this.body.x;
-        const dy = snapshot.y - this.body.y;
-
-        const error = Math.hypot(dx, dy);
-
-        // Large corrections happen after resets or major divergence.
-        if (error > MAX_REMOTE_CORRECTION) {
-            this.body.x = snapshot.x;
-            this.body.y = snapshot.y;
-
-            this.correctionX = 0;
-            this.correctionY = 0;
-        } else {
-            // Gradual positional reconciliation.
-            this.correctionX += dx * 0.58;
-            this.correctionY += dy * 0.58;
-        }
-
-        // Correct velocity gradually as well.
-        this.correctionVX +=
-            (snapshot.vx - this.body.vx) * 0.32;
-
-        this.correctionVY +=
-            (snapshot.vy - this.body.vy) * 0.32;
-
-        this.body.radius = Number.isFinite(snapshot.radius)
-            ? snapshot.radius
-            : 18;
-
-        this.lastSnapshotAt = receivedAt;
     }
 
-    simulate(dt, map) {
-        if (!this.body) return;
+    // ========================================================
+    // VERTICAL COLLISIONS
+    // ========================================================
 
-        // This client runs the remote player's physics locally.
-        stepBody(this.body, map, dt);
+    const oldY = body.y;
 
-        // Reconcile prediction errors without snapping every update.
-        const blend = 1 - Math.exp(-15 * dt);
+    body.y += body.vy * dt;
 
-        const dx = this.correctionX * blend;
-        const dy = this.correctionY * blend;
+    for (const object of solids) {
+        if (!horizontalOverlap(body.x, radius, object)) {
+            continue;
+        }
 
-        const dvx = this.correctionVX * blend;
-        const dvy = this.correctionVY * blend;
+        const top = object.y;
+        const bottom = object.y + object.h;
 
-        this.body.x += dx;
-        this.body.y += dy;
+        // Landing on top of an object.
 
-        this.body.vx += dvx;
-        this.body.vy += dvy;
+        if (
+            body.vy >= 0 &&
+            oldY + radius <= top + 2 &&
+            body.y + radius >= top
+        ) {
+            body.y = top - radius;
 
-        this.correctionX -= dx;
-        this.correctionY -= dy;
+            if (object.type === 'jumpPad') {
+                body.vy = PHYSICS.jumpPadVelocity;
+                body.vx *= 1.08;
 
-        this.correctionVX -= dvx;
-        this.correctionVY -= dvy;
+                body.onGround = false;
+
+            } else if (Math.abs(body.vy) > 115) {
+                body.vy =
+                    -Math.abs(body.vy) *
+                    PHYSICS.bounceRestitution;
+
+                body.onGround = body.vy > -70;
+
+            } else {
+                body.vy = 0;
+                body.onGround = true;
+            }
+
+        // Hitting the underside of an object.
+
+        } else if (
+            body.vy < 0 &&
+            oldY - radius >= bottom - 2 &&
+            body.y - radius <= bottom
+        ) {
+            body.y = bottom + radius;
+
+            body.vy =
+                Math.abs(body.vy) *
+                PHYSICS.bounceRestitution;
+
+        // Resolve remaining overlap.
+
+        } else if (
+            overlaps(
+                body.x,
+                body.y,
+                radius,
+                object
+            )
+        ) {
+            if (body.vy >= 0) {
+                body.y = top - radius;
+
+                body.vy = 0;
+                body.onGround = true;
+
+            } else {
+                body.y = bottom + radius;
+                body.vy = 0;
+            }
+        }
     }
 
-    getVisualState() {
-        return this.body;
+    // ========================================================
+    // GROUND FRICTION
+    // ========================================================
+
+    if (body.onGround) {
+        body.vx *= Math.exp(
+            -PHYSICS.groundFriction * dt
+        );
     }
+
+    // ========================================================
+    // WORLD BOUNDARIES
+    // ========================================================
+
+    if (body.x - radius < 0) {
+        body.x = radius;
+
+        body.vx =
+            Math.abs(body.vx) *
+            PHYSICS.wallRestitution;
+
+    } else if (body.x + radius > map.width) {
+        body.x = map.width - radius;
+
+        body.vx =
+            -Math.abs(body.vx) *
+            PHYSICS.wallRestitution;
+    }
+
+    // ========================================================
+    // WATER DETECTION
+    // ========================================================
+
+    body.inWater = isBodyInWater(body, map);
+
+    return body;
 }
 
 // ============================================================
-// PLAYER RENDERING
+// TRAJECTORY PREDICTION
 // ============================================================
 
-export function drawPlayer(
-    ctx,
-    player,
-    position,
-    { local = false, aiming = false } = {}
+export function predictTrajectory(
+    startBody,
+    map,
+    ticks = 150,
+    sampleEvery = 3
 ) {
-    if (!position) return;
+    const predicted = cloneBody(startBody);
 
-    const radius = position.radius || 18;
-    const color = player.color || '#91a0b2';
+    const points = [{
+        x: predicted.x,
+        y: predicted.y
+    }];
 
-    ctx.save();
-
-    // Ground shadow.
-    ctx.globalAlpha = 0.24;
-    ctx.fillStyle = '#000000';
-
-    ctx.beginPath();
-
-    ctx.ellipse(
-        position.x + 3,
-        position.y + radius + 8,
-        radius * 1.05,
-        5,
-        0,
-        0,
-        Math.PI * 2
-    );
-
-    ctx.fill();
-
-    ctx.globalAlpha = 1;
-
-    // Ball gradient.
-    const gradient = ctx.createRadialGradient(
-        position.x - radius * 0.38,
-        position.y - radius * 0.48,
-        radius * 0.08,
-        position.x,
-        position.y,
-        radius * 1.15
-    );
-
-    gradient.addColorStop(0, '#ffffff');
-    gradient.addColorStop(0.15, color);
-    gradient.addColorStop(1, shadeColor(color, -42));
-
-    ctx.fillStyle = gradient;
-
-    ctx.beginPath();
-
-    ctx.arc(
-        position.x,
-        position.y,
-        radius,
-        0,
-        Math.PI * 2
-    );
-
-    ctx.fill();
-
-    ctx.lineWidth = local ? 2.2 : 1.4;
-
-    ctx.strokeStyle = local
-        ? 'rgba(234,255,249,.9)'
-        : 'rgba(232,240,248,.55)';
-
-    ctx.stroke();
-
-    // Highlight.
-    ctx.globalAlpha = 0.25;
-    ctx.fillStyle = '#ffffff';
-
-    ctx.beginPath();
-
-    ctx.ellipse(
-        position.x - radius * 0.32,
-        position.y - radius * 0.42,
-        radius * 0.27,
-        radius * 0.14,
-        -0.65,
-        0,
-        Math.PI * 2
-    );
-
-    ctx.fill();
-
-    ctx.globalAlpha = 1;
-
-    if (aiming) {
-        ctx.strokeStyle = 'rgba(236,255,250,.8)';
-        ctx.lineWidth = 1.2;
-
-        ctx.setLineDash([3, 4]);
-
-        ctx.beginPath();
-
-        ctx.arc(
-            position.x,
-            position.y,
-            radius + 6,
-            0,
-            Math.PI * 2
+    for (let tick = 1; tick <= ticks; tick++) {
+        stepBody(
+            predicted,
+            map,
+            FIXED_DT
         );
 
-        ctx.stroke();
+        if (tick % sampleEvery === 0) {
+            points.push({
+                x: predicted.x,
+                y: predicted.y
+            });
+        }
 
-        ctx.setLineDash([]);
+        if (
+            predicted.y - predicted.radius >
+            map.height + 120
+        ) {
+            break;
+        }
+
+        if (
+            predicted.onGround &&
+            Math.abs(predicted.vx) < 14 &&
+            tick > 18
+        ) {
+            break;
+        }
     }
 
-    drawNameTag(
-        ctx,
-        player.name || 'Player',
-        position.x,
-        position.y - radius - 13,
-        color,
-        local
-    );
-
-    ctx.restore();
+    return points;
 }
 
-function drawNameTag(
-    ctx,
-    name,
-    centerX,
-    baselineY,
-    color,
-    local
+// ============================================================
+// COLLISION HELPERS
+// ============================================================
+
+function verticalOverlap(
+    centerY,
+    radius,
+    object
 ) {
-    ctx.save();
-
-    ctx.font = '600 13px Manrope, sans-serif';
-
-    const textWidth = ctx.measureText(name).width;
-    const width = Math.min(190, textWidth + 18);
-
-    const height = 22;
-
-    const x = centerX - width / 2;
-    const y = baselineY - height + 2;
-
-    ctx.fillStyle = 'rgba(7,11,17,.76)';
-
-    roundedRect(ctx, x, y, width, height, 6);
-    ctx.fill();
-
-    ctx.fillStyle = color;
-
-    ctx.beginPath();
-    ctx.arc(x + 8, y + 11, 3, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.fillStyle = local ? '#f2faf8' : '#dce5ee';
-
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-
-    ctx.fillText(
-        name,
-        centerX + 5,
-        y + 11,
-        width - 20
+    return (
+        centerY + radius > object.y &&
+        centerY - radius < object.y + object.h
     );
-
-    ctx.restore();
 }
 
-function shadeColor(hex, amount) {
-    const clean = /^#[0-9a-f]{6}$/i.test(hex)
-        ? hex.slice(1)
-        : '72e4c5';
-
-    const number = Number.parseInt(clean, 16);
-
-    const r = Math.max(
-        0,
-        Math.min(255, (number >> 16) + amount)
+function horizontalOverlap(
+    centerX,
+    radius,
+    object
+) {
+    return (
+        centerX + radius > object.x &&
+        centerX - radius < object.x + object.w
     );
-
-    const g = Math.max(
-        0,
-        Math.min(255, ((number >> 8) & 255) + amount)
-    );
-
-    const b = Math.max(
-        0,
-        Math.min(255, (number & 255) + amount)
-    );
-
-    return `rgb(${r}, ${g}, ${b})`;
 }
 
-function roundedRect(ctx, x, y, width, height, radius) {
-    ctx.beginPath();
-    ctx.roundRect(x, y, width, height, radius);
+function overlaps(
+    x,
+    y,
+    radius,
+    object
+) {
+    return (
+        x + radius > object.x &&
+        x - radius < object.x + object.w &&
+        y + radius > object.y &&
+        y - radius < object.y + object.h
+    );
+}
+
+// ============================================================
+// MATH
+// ============================================================
+
+function clamp(value, min, max) {
+    return Math.max(
+        min,
+        Math.min(max, value)
+    );
 }
