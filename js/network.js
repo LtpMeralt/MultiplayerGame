@@ -1,10 +1,14 @@
-import { joinRoom } from 'https://esm.run/trystero';
+import { joinRoom } from 'https://esm.run/@trystero-p2p/firebase';
+import { rtdb } from './firebase.js';
 
-const APP_ID = 'ltpmer-multiplayer-game-v1';
+const APP_ID = 'multiplayer-game';
 
 export async function connectRoom({ code, password = '', profile, create = false, callbacks = {} }) {
   const roomId = `multiplayer-game-${String(code).toLowerCase()}`;
-  const config = { appId: APP_ID };
+  const config = {
+    appId: APP_ID,
+    relayConfig: { database: rtdb }
+  };
   if (password) config.password = password;
 
   const room = joinRoom(config, roomId);
